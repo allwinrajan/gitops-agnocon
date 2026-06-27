@@ -17,7 +17,7 @@ users:
 
 # Multus / MacVLAN (feature flag)
 multus:
-  enabled: true
+  enabled: false
   networkAttachmentDefinition: macvlan-mysql-primary
 groupReplication:
   groupName: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -79,7 +79,7 @@ mysqlConfig:
 
 # Consul — connect-inject Envoy sidecar
 consul:
-  enabled: true
+  enabled: false
   url: "https://consul-server.consul.svc.cluster.local:8501"
   token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
   serviceName: "mysql-service"
