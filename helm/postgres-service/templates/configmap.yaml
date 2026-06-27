@@ -220,6 +220,11 @@ data:
       echo "[standby-init] Existing data dir found — skipping pg_basebackup."
     fi
 
+    # PostgreSQL refuses to start unless PGDATA is exactly 0700 (or 0750 with group read).
+    # pg_basebackup creates PGDATA itself using the container's default umask, which is
+    # NOT guaranteed to be 0700 — fix it unconditionally, every startup, fresh or not.
+    chmod 700 "${PGDATA}"
+
     # Apply config
     echo "[standby-init] Copying postgresql.conf and pg_hba.conf..."
     cp "${CONF_SRC}/postgresql.conf" "${PGDATA}/postgresql.conf"

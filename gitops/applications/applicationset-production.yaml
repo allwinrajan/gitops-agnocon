@@ -18,9 +18,9 @@ spec:
         # - service: mysql-service
         #   namespace: mysql-cluster
         #   wave: "1"
-        - service: postgres-service
-          namespace: postgres-cluster
-          wave: "1"
+        # - service: postgres-service
+        #   namespace: postgres-cluster
+        #   wave: "1"
         # - service: redis-service
         #   namespace: redis
         #   wave: "1"
