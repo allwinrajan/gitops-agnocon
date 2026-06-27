@@ -11,7 +11,7 @@ metadata:
 spec:
   project: agnocon
   source:
-    repoURL: "https://github.com/AlvinAgnoshin/agnocon-argo-cicd.git"
+    repoURL: "https://github.com/allwinrajan/gitops-agnocon.git"
     targetRevision: develop
     path: gitops/applications
   destination:

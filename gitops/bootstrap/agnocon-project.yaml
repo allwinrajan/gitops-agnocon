@@ -8,8 +8,8 @@ metadata:
 spec:
   description: "Agnocon Platform - GitOps"
   sourceRepos:
-    - "https://github.com/AlvinAgnoshin/agnocon-argo-cicd.git"
-    - "https://github.com/AlvinAgnoshin/*"
+    - "https://github.com/allwinrajan/gitops-agnocon.git"
+    - "https://github.com/allwinrajan/*"
   destinations:
     - namespace: admin-app
       server: https://kubernetes.default.svc
