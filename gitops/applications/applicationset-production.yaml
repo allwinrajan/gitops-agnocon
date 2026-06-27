@@ -88,7 +88,7 @@ spec:
       project: agnocon
       source:
         repoURL: "https://github.com/allwinrajan/gitops-agnocon.git"
-        targetRevision: develop
+        targetRevision: main
         path: "helm/{{.service}}"
         helm:
           releaseName: "{{.service}}"

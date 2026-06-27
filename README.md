@@ -30,6 +30,8 @@ kubectl apply -f gitops/bootstrap/namespaces.yaml
 kubectl apply -f gitops/bootstrap/agnocon-project.yaml
 # 2. choose ONE environment's ApplicationSet
 kubectl apply -f gitops/applications/applicationset-staging.yaml
+kubectl apply -f gitops/applications/applicationset-production.yaml
+
 #    (or applicationset-production.yaml)
 # 3. (optional) app-of-apps
 kubectl apply -f gitops/bootstrap/root-app.yaml
