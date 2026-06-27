@@ -1,33 +1,4 @@
-#
 
-kubectl exec -it -n mysql-cluster mysql-service-primary-0 -- bash
-
-#
-
-mysql -uroot -p
-
-#
-
-CREATE DATABASE failover_test;
-USE failover_test;
-
-CREATE TABLE demo (
-    id INT PRIMARY KEY,
-    name VARCHAR(100)
-);
-
-INSERT INTO demo VALUES (1,'Primary Working');
-
-# 
-
-root@controlplane:~/gitops-agnocon$ cd ../
-root@controlplane:~$ 
-root@controlplane:~$ 
-root@controlplane:~$ rm -rf *
-root@controlplane:~$ 
-root@controlplane:~$ 
-root@controlplane:~$ git clone https://github.com/allwinrajan/gitops-agnocon.git
-Cloning into 'gitops-agnocon'...
 Username for 'https://github.com': allwinrajan
 Password for 'https://allwinrajan@github.com': 
 remote: Enumerating objects: 348, done.
@@ -186,3 +157,233 @@ NAME                          READY   STATUS    RESTARTS   AGE
 mysql-service-primary-0       1/1     Running   0          5m39s
 mysql-service-secondary-0-0   1/1     Running   0          5m39s
 mysql-service-secondary-1-0   1/1     Running   0          5m39s
+
+
+# Expected
+
+Great! Your MySQL cluster is up:
+
+```text
+mysql-service-primary-0       Running
+mysql-service-secondary-0-0   Running
+mysql-service-secondary-1-0   Running
+```
+
+Now let's verify **replication** and **failover**.
+
+---
+
+# Step 1: Check Services
+
+```bash
+kubectl get svc -n mysql-cluster
+```
+
+You'll likely see something like:
+
+```text
+mysql-service-primary
+mysql-service-secondary
+mysql-service-headless
+```
+
+---
+
+# Step 2: Connect to the Primary
+
+Execute a shell:
+
+```bash
+kubectl exec -it -n mysql-cluster mysql-service-primary-0 -- bash
+```
+
+Login:
+
+```bash
+mysql -uroot -p
+```
+
+or if you know the application user:
+
+```bash
+mysql -umyuser -p
+```
+
+---
+
+# Step 3: Verify Primary
+
+Inside MySQL:
+
+```sql
+SHOW DATABASES;
+```
+
+Create a test database:
+
+```sql
+CREATE DATABASE failover_test;
+USE failover_test;
+
+CREATE TABLE demo (
+    id INT PRIMARY KEY,
+    name VARCHAR(100)
+);
+
+INSERT INTO demo VALUES (1,'Primary Working');
+```
+
+Exit:
+
+```sql
+exit
+```
+
+---
+
+# Step 4: Verify Replication on Secondary
+
+Connect to a secondary:
+
+```bash
+kubectl exec -it -n mysql-cluster mysql-service-secondary-0-0 -- bash
+```
+
+Login:
+
+```bash
+mysql -uroot -p
+```
+
+Run:
+
+```sql
+SHOW DATABASES;
+
+USE failover_test;
+
+SELECT * FROM demo;
+```
+
+You should see:
+
+```text
++----+-----------------+
+| id | name            |
++----+-----------------+
+| 1  | Primary Working |
++----+-----------------+
+```
+
+Repeat on the second replica if desired.
+
+---
+
+# Step 5: Check Replication Status
+
+On a secondary:
+
+```sql
+SHOW REPLICA STATUS\G
+```
+
+(or on older versions, `SHOW SLAVE STATUS\G`)
+
+Look for:
+
+```text
+Replica_IO_Running: Yes
+Replica_SQL_Running: Yes
+Seconds_Behind_Source: 0
+```
+
+---
+
+# Step 6: Simulate Primary Failure
+
+Delete the primary pod:
+
+```bash
+kubectl delete pod mysql-service-primary-0 -n mysql-cluster
+```
+
+Watch:
+
+```bash
+kubectl get pods -n mysql-cluster -w
+```
+
+Observe whether:
+
+* A new `mysql-service-primary-0` pod is recreated.
+* The secondaries continue running.
+
+---
+
+# Step 7: Test During Recovery
+
+After the primary is recreated:
+
+```bash
+kubectl exec -it -n mysql-cluster mysql-service-primary-0 -- mysql -uroot -p
+```
+
+Run:
+
+```sql
+SELECT * FROM failover_test.demo;
+```
+
+Your data should still exist because it's stored on the persistent volume.
+
+---
+
+# Important: Is This Real Failover?
+
+The answer depends on your Helm chart.
+
+If your chart deploys:
+
+```
+Primary
+├── Replica 1
+└── Replica 2
+```
+
+and simply recreates the primary pod when it dies, **that is not automatic failover**. Kubernetes is just restarting the StatefulSet pod, and the same volume is reattached.
+
+**Real automatic failover** means:
+
+* Primary dies.
+* One replica is promoted to become the new primary.
+* The service endpoint switches to the promoted replica.
+* Applications continue writing without manual intervention.
+
+That requires components such as:
+
+* MySQL Orchestrator
+* MHA (Master High Availability)
+* MySQL InnoDB Cluster
+* MySQL Group Replication
+* Percona Operator
+* Bitnami MySQL with replication manager (depending on configuration)
+
+---
+
+## Let's verify what your chart supports
+
+Run these commands and share the output:
+
+```bash
+kubectl get svc -n mysql-cluster
+
+kubectl get statefulset -n mysql-cluster
+
+kubectl get pods -n mysql-cluster -o wide
+
+kubectl describe statefulset mysql-service-primary -n mysql-cluster
+
+kubectl describe statefulset mysql-service-secondary-0 -n mysql-cluster
+```
+
+From that, I can tell you whether your deployment supports **true automatic failover** or only **pod recovery with replication**.

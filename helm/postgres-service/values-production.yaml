@@ -26,7 +26,8 @@ defaultDatabase: "postgres"
 
 # High Availability
 ha:
-  enabled: false
+  enabled: true
+  replicas: 2
 
 # Multus / MacVLAN (feature flag)
 multus:
