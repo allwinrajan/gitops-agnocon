@@ -91,13 +91,13 @@ consul:
 # Probes — disabled by default, enable after deployment validation
 probes:
   liveness:
-    enabled: false
-    initialDelaySeconds: 120
+    enabled: true
+    initialDelaySeconds: 180   # 3 min — GR init + join takes time on constrained nodes
     periodSeconds: 15
     timeoutSeconds: 5
-    failureThreshold: 5
+    failureThreshold: 5        # 75s grace after liveness starts before forced restart
   readiness:
-    enabled: false
+    enabled: true
     initialDelaySeconds: 60
     periodSeconds: 10
     timeoutSeconds: 5

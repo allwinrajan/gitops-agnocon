@@ -97,17 +97,25 @@ spec:
                   - sh
                   - -c
                   - |
+                    PRIMARY="{{ include "redis.primaryFQDN" . }}"
+                    # Wait for local Redis to be ready
                     for i in $(seq 1 30); do
-                      if redis-cli -a "${REDIS_PASSWORD}" \
-                           --no-auth-warning PING 2>/dev/null | grep -q PONG; then
-                        redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning CONFIG SET notify-keyspace-events 'Exg$Klt' 2>/dev/null || true
-                        redis-cli --no-auth-warning ACL SETUSER {{ .Values.auth.username }} on ">{{ .Values.auth.password }}" resetpass ">{{ .Values.auth.password }}" "~*" "&*" +@all 2>/dev/null || true
-                        echo "[postStart-r1] CONFIG SET and ACL user OK"
-                        exit 0
-                      fi
+                      redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG && break
                       sleep 2
                     done
-                    echo "[postStart-r1] Redis not ready — skipped"
+                    # Ensure replication is connected — retry if --replicaof arg didn't connect (DNS race at startup)
+                    for attempt in $(seq 1 10); do
+                      ROLE=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null | grep "^role:" | tr -d '\r')
+                      if [ "${ROLE}" = "role:slave" ] || [ "${ROLE}" = "role:replica" ]; then
+                        echo "[postStart-r1] Replication connected (${ROLE})"
+                        break
+                      fi
+                      echo "[postStart-r1] attempt ${attempt}: role=${ROLE} — issuing REPLICAOF ${PRIMARY} 6379"
+                      redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning REPLICAOF "${PRIMARY}" 6379 2>/dev/null || true
+                      sleep 5
+                    done
+                    redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning CONFIG SET notify-keyspace-events 'Exg$Klt' 2>/dev/null || true
+                    echo "[postStart-r1] done"
                     exit 0
             preStop:
               exec:
@@ -257,17 +265,23 @@ spec:
                   - sh
                   - -c
                   - |
+                    PRIMARY="{{ include "redis.primaryFQDN" . }}"
                     for i in $(seq 1 30); do
-                      if redis-cli -a "${REDIS_PASSWORD}" \
-                           --no-auth-warning PING 2>/dev/null | grep -q PONG; then
-                        redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning CONFIG SET notify-keyspace-events 'Exg$Klt' 2>/dev/null || true
-                        redis-cli --no-auth-warning ACL SETUSER {{ .Values.auth.username }} on ">{{ .Values.auth.password }}" resetpass ">{{ .Values.auth.password }}" "~*" "&*" +@all 2>/dev/null || true
-                        echo "[postStart-r2] CONFIG SET and ACL user OK"
-                        exit 0
-                      fi
+                      redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG && break
                       sleep 2
                     done
-                    echo "[postStart-r2] Redis not ready — skipped"
+                    for attempt in $(seq 1 10); do
+                      ROLE=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null | grep "^role:" | tr -d '\r')
+                      if [ "${ROLE}" = "role:slave" ] || [ "${ROLE}" = "role:replica" ]; then
+                        echo "[postStart-r2] Replication connected (${ROLE})"
+                        break
+                      fi
+                      echo "[postStart-r2] attempt ${attempt}: role=${ROLE} — issuing REPLICAOF ${PRIMARY} 6379"
+                      redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning REPLICAOF "${PRIMARY}" 6379 2>/dev/null || true
+                      sleep 5
+                    done
+                    redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning CONFIG SET notify-keyspace-events 'Exg$Klt' 2>/dev/null || true
+                    echo "[postStart-r2] done"
                     exit 0
             preStop:
               exec:

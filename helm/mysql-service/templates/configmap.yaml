@@ -265,11 +265,22 @@ data:
         echo "[bootstrap] attempt ${i}/40..."; sleep 5
       done
 
-      echo "[bootstrap] Joining group replication..."
-      sql "START GROUP_REPLICATION USER='${REPL_USER}', PASSWORD='${REPL_PASS}';" \
-        || echo "[bootstrap] WARN: GR start (secondary)"
+      # Retry GR join — GR XCOM port 33061 may not be ready immediately
+      # after MySQL port 3306 accepts connections. Retry up to 10 times.
+      for attempt in $(seq 1 10); do
+        STATE=$(member_state)
+        [ "${STATE}" = "ONLINE" ] && echo "[bootstrap] Already ONLINE." && break
+        echo "[bootstrap] GR join attempt ${attempt}/10..."
+        sql "START GROUP_REPLICATION USER='${REPL_USER}', PASSWORD='${REPL_PASS}';" \
+          && echo "[bootstrap] GR start issued." || echo "[bootstrap] WARN: GR start attempt ${attempt}"
+        sleep 5
+        STATE=$(member_state)
+        [ "${STATE}" = "ONLINE" ] && echo "[bootstrap] SECONDARY ONLINE after attempt ${attempt}." && break
+        echo "[bootstrap] state=${STATE} — waiting 10s before retry..."
+        sleep 10
+      done
 
-      # Wait for ONLINE
+      # Final wait for ONLINE confirmation
       for i in $(seq 1 30); do
         STATE=$(member_state)
         [ "${STATE}" = "ONLINE" ] && echo "[bootstrap] SECONDARY ONLINE." && break
@@ -283,6 +294,15 @@ data:
 
   liveness.sh: |
     #!/bin/bash
+    # Allow 5-minute startup grace before enforcing GR ONLINE check.
+    # During this window, only verify mysqld is accepting connections.
+    # This prevents premature pod kill/restart while GR is still joining the group.
+    UPTIME=$(cat /proc/uptime | awk '{print int($1)}')
+    if [ "${UPTIME}" -lt 300 ]; then
+      mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+        --socket=/var/run/mysqld/mysqld.sock --silent 2>/dev/null
+      exit $?
+    fi
     STATE=$(mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" --socket=/var/run/mysqld/mysqld.sock \
       -N --connect-timeout=5 \
       -e "SELECT MEMBER_STATE FROM performance_schema.replication_group_members

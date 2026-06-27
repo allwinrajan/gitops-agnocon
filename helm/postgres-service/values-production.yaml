@@ -115,13 +115,13 @@ consul:
 # Probes — disabled by default, enable after deployment validation
 probes:
   liveness:
-    enabled: false
+    enabled: true
     initialDelaySeconds: 60
     periodSeconds: 15
     timeoutSeconds: 5
     failureThreshold: 5
   readiness:
-    enabled: false
+    enabled: true
     initialDelaySeconds: 30
     periodSeconds: 10
     timeoutSeconds: 5

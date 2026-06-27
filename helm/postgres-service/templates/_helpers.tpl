@@ -28,7 +28,7 @@ Headless service name
 Primary pod FQDN — used by standbys for streaming replication
 */}}
 {{- define "postgres.primaryFQDN" -}}
-{{- printf "postgres-cluster-primary-0.%s.%s.svc.cluster.local" (include "postgres.headlessSvc" .) (include "postgres.namespace" .) }}
+{{- printf "%s-primary-0.%s.%s.svc.cluster.local" (include "postgres.name" .) (include "postgres.headlessSvc" .) (include "postgres.namespace" .) }}
 {{- end }}
 
 {{/*
