@@ -34,6 +34,13 @@ multus:
   enabled: false
   networkAttachmentDefinition: macvlan-postgres-179
 
+network:
+  authMethod: "md5"          # md5 | scram-sha-256 | trust (avoid trust outside local dev)
+  allowedCIDRs:
+    - cidr: "0.0.0.0/0"       # allow from anywhere — dev/lab convenience only
+      databases: ["all"]
+      replication: true
+
 # Storage — local-path 10Gi ReadWriteOnce
 # storage:
 #   size: "10Gi"

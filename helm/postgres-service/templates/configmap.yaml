@@ -50,17 +50,18 @@ data:
   pg_hba.conf: |
     # TYPE  DATABASE        USER            ADDRESS                 METHOD
     local   all             all                                     trust
-    host    all             all             127.0.0.1/32            md5
-    host    all             all             ::1/128                 md5
-    # Pod network (Calico/Flannel)
-    host    all             all             10.244.0.0/16           md5
-    # Service network
-    host    all             all             10.96.0.0/12            md5
-    # LAN / MacVLAN
-    host    all             all             192.168.0.0/16          md5
+    host    all             all             127.0.0.1/32            {{ .Values.network.authMethod }}
+    host    all             all             ::1/128                 {{ .Values.network.authMethod }}
+    {{- range .Values.network.allowedCIDRs }}
+    # {{ .cidr }}
+    host    {{ join "," .databases }}    all    {{ .cidr }}    {{ $.Values.network.authMethod }}
+    {{- end }}
     # Streaming replication
-    host    replication     replicator      10.244.0.0/16           md5
-    host    replication     replicator      10.96.0.0/12            md5
+    {{- range .Values.network.allowedCIDRs }}
+    {{- if .replication }}
+    host    replication    replicator    {{ .cidr }}    {{ $.Values.network.authMethod }}
+    {{- end }}
+    {{- end }}
 
 ---
 # ==============================================================================
