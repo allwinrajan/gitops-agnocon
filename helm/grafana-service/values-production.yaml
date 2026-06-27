@@ -1,0 +1,8 @@
+# grafana-service — production overlay
+# Merged on top of values.yaml:  helm -f values.yaml -f values-production.yaml
+
+image:
+  tag: "realtime-grafana-production-v1.0.0"
+
+consul:
+  token: "PROD-CONSUL-TOKEN-REPLACE-ME"

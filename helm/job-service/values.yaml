@@ -1,0 +1,70 @@
+namespace: observability
+replicaCount: 1
+fullnameOverride: "job-service"
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: job-service-staging-v1.0.0
+  pullPolicy: Always
+  pullSecrets:
+    - name: regcred
+
+consul:
+  url: "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  connectInject: true
+  serviceName: "job-service"
+  serviceAccountName: "job-service"
+  zone: "ZONE-1"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-job-service
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+  waitForNetwork:
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    waitTimeout: 30
+    checkInterval: 2
+
+statefulset:
+  serviceName: job-service
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  terminationGracePeriodSeconds: 15
+
+service:
+  enabled: false
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+persistence:
+  enabled: false
+
+securityContext:
+  runAsUser: 0
+  capabilities:
+    add: ["NET_ADMIN"]
+
+podSecurityContext: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+livenessProbe:
+  enabled: false
+
+readinessProbe:
+  enabled: false

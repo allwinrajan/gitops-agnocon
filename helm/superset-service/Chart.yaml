@@ -1,0 +1,13 @@
+apiVersion: v2
+name: superset-service
+description: Apache Superset — Deployment with Multus, Consul Connect sidecar injection
+type: application
+version: 1.0.0
+appVersion: "6.0.0"
+keywords:
+  - superset
+  - observability
+  - consul
+  - multus
+maintainers:
+  - name: Agnocon

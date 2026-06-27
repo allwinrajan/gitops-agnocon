@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "superset-service.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "superset-service.labels" . | nindent 4 }}
+data:
+  superset_config.py: |
+    import os
+    import sys
+
+    # ── MySQL driver path injection ────────────────────────────
+    _extra = "/tmp/superset-pkgs"
+    if _extra not in sys.path:
+        sys.path.insert(0, _extra)
+
+    try:
+        import pymysql
+        pymysql.install_as_MySQLdb()
+    except Exception:
+        pass
+
+    # ── Core ───────────────────────────────────────────────────
+    SECRET_KEY = os.environ.get("SUPERSET_SECRET_KEY", "changeme")
+
+    SQLALCHEMY_DATABASE_URI = os.environ.get(
+        "SQLALCHEMY_DATABASE_URI",
+        "sqlite:////var/lib/superset/superset.db"
+    )
+
+    FAB_ADD_SECURITY_VIEWS = True
+    SUPERSET_WEBSERVER_PORT = 8088
+    SUPERSET_WEBSERVER_TIMEOUT = 120
+    RATELIMIT_STORAGE_URI = "memory://"
+
+    # ── Branding ───────────────────────────────────────────────
+    APP_NAME = "AgnoCon Analytics"
+
+    # ── Proxy ──────────────────────────────────────────────────
+    ENABLE_PROXY_FIX      = True
+    PROXY_FIX_NUM_PROXIES = 1
+    TALISMAN_ENABLED      = False
+
+    # ── Allowed Hosts ──────────────────────────────────────────
+    ALLOWED_HOSTS = [
+        "superset.agnocon.com",
+        "admin.agnocon.com",
+        "192.168.9.70",
+        "192.168.9.139",
+        "192.168.9.140",
+        "localhost",
+        "127.0.0.1",
+    ]
+
+    # ── HTTP Headers ───────────────────────────────────────────
+    HTTP_HEADERS = {
+        "X-Frame-Options": "ALLOWALL",
+        "Content-Security-Policy": (
+            "frame-ancestors 'self' "
+            "https://superset.agnocon.com "
+            "https://admin.agnocon.com "
+            "http://192.168.9.139:4000 "
+            "https://192.168.9.140:4001"
+        ),
+    }
+
+    # ── Session / CSRF ─────────────────────────────────────────
+    # Lax + Secure=False = works on plain HTTP (192.168.9.70:8088)
+    # Once superset.agnocon.com HTTPS is live, switch to:
+    #   SESSION_COOKIE_SAMESITE = "None"
+    #   SESSION_COOKIE_SECURE   = True
+    SESSION_COOKIE_SAMESITE = "Lax"
+    SESSION_COOKIE_SECURE   = False
+    SESSION_COOKIE_HTTPONLY = True
+    WTF_CSRF_ENABLED        = False
+    WTF_CSRF_EXEMPT_LIST    = []
+
+    # ── CORS ───────────────────────────────────────────────────
+    ENABLE_CORS = True
+    CORS_OPTIONS = {
+        "origins": [
+            "https://superset.agnocon.com",
+            "https://admin.agnocon.com",
+            "http://192.168.9.139:4000",
+            "https://192.168.9.140:4001",
+        ],
+        "supports_credentials": True,
+        "allow_headers": ["*"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "resources": ["*"],
+    }
+
+    # ── Embedding ──────────────────────────────────────────────
+    GUEST_ROLE_NAME             = "Gamma"
+    GUEST_TOKEN_JWT_SECRET      = os.environ.get("SUPERSET_SECRET_KEY", "changeme")
+    GUEST_TOKEN_JWT_ALGO        = "HS256"
+    GUEST_TOKEN_HEADER_NAME     = "X-GuestToken"
+    GUEST_TOKEN_JWT_EXP_SECONDS = 3600
+
+    # ── Preferred DB tiles ─────────────────────────────────────
+    PREFERRED_DATABASES = [
+        "PostgreSQL",
+        "Presto",
+        "MySQL",
+        "SQLite",
+    ]
+
+    # ── Feature flags ──────────────────────────────────────────
+    FEATURE_FLAGS = {
+        "ENABLE_TEMPLATE_PROCESSING": True,
+        "DASHBOARD_NATIVE_FILTERS":   True,
+        "DASHBOARD_CROSS_FILTERS":    True,
+        "ENABLE_JAVASCRIPT_CONTROLS": False,
+        "ALERT_REPORTS":              True,
+        "EMBEDDED_SUPERSET":          True,
+        "DASHBOARD_RBAC":             False,
+    }

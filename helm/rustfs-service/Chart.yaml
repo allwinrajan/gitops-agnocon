@@ -1,0 +1,16 @@
+
+# ============================================
+# Chart.yaml
+# ============================================
+apiVersion: v2
+name: rustfs-service
+description: Production-grade RustFS deployment with Multus networking
+type: application
+version: 1.0.0
+appVersion: "latest"
+keywords:
+  - rustfs
+  - storage
+  - s3
+maintainers:
+  - name: DevOps Team

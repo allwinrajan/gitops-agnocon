@@ -1,0 +1,27 @@
+{{- if .Values.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Values.namespace }}
+  name: {{ .Values.service.name }}
+  labels:
+    {{- include "freeswitch.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  clusterIP: None
+  selector:
+    {{- include "freeswitch.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: sip
+      port: {{ .Values.service.ports.sip.port }}
+      protocol: {{ .Values.service.ports.sip.protocol }}
+    - name: sip-alt
+      port: {{ .Values.service.ports.sipAlt.port }}
+      protocol: {{ .Values.service.ports.sipAlt.protocol }}
+    - name: esl
+      port: {{ .Values.service.ports.esl.port }}
+      protocol: {{ .Values.service.ports.esl.protocol }}
+    - name: wss
+      port: {{ .Values.service.ports.wss.port }}
+      protocol: {{ .Values.service.ports.wss.protocol }}
+{{- end }}

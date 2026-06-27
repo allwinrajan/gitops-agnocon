@@ -1,0 +1,68 @@
+---
+# Headless — stable per-pod DNS for GR replication and client discovery
+# Pod DNS examples:
+#   mysql-cluster-primary-0.mysql-headless.mysql-cluster.svc.cluster.local
+#   mysql-cluster-secondary-0-0.mysql-headless.mysql-cluster.svc.cluster.local
+#   mysql-cluster-secondary-1-0.mysql-headless.mysql-cluster.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mysql.headlessSvc" . }}
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: mysql
+  ports:
+    - name: mysql
+      port: {{ .Values.mysqlPort }}
+      targetPort: mysql
+    - name: gr-xcom
+      port: {{ .Values.groupReplication.groupPort }}
+      targetPort: gr-xcom
+
+---
+# Primary ClusterIP — read/write endpoint
+# NOTE: After GR auto-failover the pod labels do NOT update automatically.
+# Use GR metadata (performance_schema.replication_group_members) to identify
+# the current primary. This service is useful for initial writes and monitoring.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mysql.name" . }}-primary
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+    role: primary
+  ports:
+    - name: mysql
+      port: {{ .Values.mysqlPort }}
+      targetPort: mysql
+
+---
+# Secondary ClusterIP — read-only load-balanced endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mysql.name" . }}-secondary
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: secondary
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+    role: secondary
+  ports:
+    - name: mysql
+      port: {{ .Values.mysqlPort }}
+      targetPort: mysql

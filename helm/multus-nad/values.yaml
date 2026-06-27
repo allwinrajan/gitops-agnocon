@@ -1,0 +1,124 @@
+# ==============================================================================
+#  multus-nad — base values
+#
+#  mode: single | multi
+#    single → host-local IPAM  (single-node clusters)
+#    multi  → whereabouts IPAM (multi-node clusters; requires whereabouts CNI)
+#
+#  `defaults` apply to every NAD; any entry under `nads` may override
+#  master / gateway / subnet / dns and sets its own rangeStart / rangeEnd.
+#
+#  Namespaces must already exist (bootstrap/namespaces.yaml, Argo wave -2).
+#  rtp-core and sbc-core are NOT here — they manage their own per-pod NADs.
+# ==============================================================================
+
+mode: single
+
+defaults:
+  master: ens34
+  gateway: "192.168.9.1"
+  subnet: "192.168.9.0/24"
+  dns:
+    nameservers:
+      - "8.8.8.8"
+      - "192.168.9.1"
+    domain: local
+    search:
+      - local
+
+# One entry per NAD. enabled lets you skip individual NADs per environment.
+nads:
+  # ── data / messaging / storage ──────────────────────────────────────────
+  - name: macvlan-mysql-primary
+    namespace: mysql-cluster
+    enabled: true
+    rangeStart: "192.168.9.135"
+    rangeEnd: "192.168.9.135"
+  - name: macvlan-postgres-179
+    namespace: postgres-cluster
+    enabled: true
+    rangeStart: "192.168.9.136"
+    rangeEnd: "192.168.9.136"
+  - name: macvlan-redis-primary
+    namespace: redis
+    enabled: true
+    rangeStart: "192.168.9.134"
+    rangeEnd: "192.168.9.134"
+  - name: macvlan-influxdb-primary
+    namespace: influxdb
+    enabled: true
+    rangeStart: "192.168.9.137"
+    rangeEnd: "192.168.9.137"
+  - name: macvlan-nats-81-82
+    namespace: nats
+    enabled: true
+    rangeStart: "192.168.9.81"
+    rangeEnd: "192.168.9.82"
+  - name: macvlan-rustfs-179
+    namespace: rustfs
+    enabled: true
+    rangeStart: "192.168.9.50"
+    rangeEnd: "192.168.9.50"
+  # ── sip apps (fs-core; rtp/sbc excluded — own per-pod NADs) ──────────────
+  - name: macvlan-fs-core
+    namespace: freeswitch
+    enabled: true
+    rangeStart: "192.168.9.46"
+    rangeEnd: "192.168.9.46"
+  - name: macvlan-routing-engine
+    namespace: freeswitch
+    enabled: true
+    rangeStart: "192.168.9.40"
+    rangeEnd: "192.168.9.40"
+  - name: macvlan-esl-service
+    namespace: freeswitch
+    enabled: true
+    rangeStart: "192.168.9.44"
+    rangeEnd: "192.168.9.44"
+  - name: macvlan-acd-service
+    namespace: freeswitch
+    enabled: true
+    rangeStart: "192.168.9.43"
+    rangeEnd: "192.168.9.43"
+  # ── admin apps ────────────────────────────────────────────────────────────
+  - name: macvlan-backend-service
+    namespace: admin-app
+    enabled: true
+    rangeStart: "192.168.9.41"
+    rangeEnd: "192.168.9.41"
+  - name: macvlan-frontend-service
+    namespace: admin-app
+    enabled: true
+    rangeStart: "192.168.9.42"
+    rangeEnd: "192.168.9.42"
+  - name: macvlan-workspace-service
+    namespace: admin-app
+    enabled: true
+    rangeStart: "192.168.9.47"
+    rangeEnd: "192.168.9.47"
+  # ── observability / ops ─────────────────────────────────────────────────
+  - name: macvlan-grafana-service
+    namespace: observability
+    enabled: true
+    rangeStart: "192.168.9.48"
+    rangeEnd: "192.168.9.48"
+  - name: macvlan-superset-service
+    namespace: observability
+    enabled: true
+    rangeStart: "192.168.9.49"
+    rangeEnd: "192.168.9.49"
+  - name: macvlan-job-service
+    namespace: observability
+    enabled: true
+    rangeStart: "192.168.9.99"
+    rangeEnd: "192.168.9.99"
+  - name: macvlan-telegraf-service
+    namespace: observability
+    enabled: true
+    rangeStart: "192.168.9.51"
+    rangeEnd: "192.168.9.51"
+  - name: macvlan-watchdog
+    namespace: watchdog
+    enabled: true
+    rangeStart: "192.168.9.45"
+    rangeEnd: "192.168.9.45"

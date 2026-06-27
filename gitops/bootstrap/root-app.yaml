@@ -1,0 +1,25 @@
+# App-of-apps — points Argo at the ApplicationSet that fans out to all charts.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agnocon-root
+  namespace: argocd
+  labels:
+    agnocon.io/part-of: agnocon
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: agnocon
+  source:
+    repoURL: "https://github.com/AlvinAgnoshin/agnocon-argo-cicd.git"
+    targetRevision: develop
+    path: gitops/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

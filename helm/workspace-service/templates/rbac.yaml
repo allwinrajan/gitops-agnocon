@@ -1,0 +1,56 @@
+# ServiceAccount: MUST match consul.serviceName name (Consul Connect requirement)
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "workspace-service.labels" . | nindent 4 }}
+  annotations:
+    description: "Service account for workspace-service (required for Consul Connect)"
+
+---
+# Role: Allow consul-tag-patcher init container to patch pod annotations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "workspace-service.labels" . | nindent 4 }}
+  annotations:
+    description: "Allows pod annotation patching for Consul service registration"
+
+rules:
+  # Get current pod details
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  
+  # Patch pod annotations (for consul-tag-patcher to inject Multus IP)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+
+---
+# RoleBinding: Bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "workspace-service.labels" . | nindent 4 }}
+  annotations:
+    description: "Binds pod-patcher role to workspace-service service account"
+
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.consul.serviceAccountName }}
+    namespace: {{ .Values.namespace }}

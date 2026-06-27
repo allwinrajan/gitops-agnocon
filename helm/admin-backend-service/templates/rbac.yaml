@@ -1,0 +1,42 @@
+{{- if .Values.consul.enabled }}
+# ServiceAccount — admin-backend-service
+# Used by consul-tag-patcher init container to patch pod annotations with
+# the live Multus (MacVLAN) IP before Consul Connect registers the service.
+# CRITICAL: serviceAccountName MUST equal serviceName (Consul webhook enforces this).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "admin-app-api.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "admin-app-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "admin-app-api.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.consul.serviceAccountName }}
+    namespace: {{ .Values.namespace }}
+{{- end }}

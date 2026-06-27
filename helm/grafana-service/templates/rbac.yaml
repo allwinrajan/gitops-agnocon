@@ -1,0 +1,42 @@
+{{- if .Values.consul.enabled }}
+# ServiceAccount — grafana-service
+# Used by consul-tag-patcher init container (direct HTTP API registration).
+# No Envoy sidecar — registration is done via direct Consul HTTP API.
+# CRITICAL: serviceAccountName MUST equal serviceName
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grafana-service.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grafana-service.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "grafana-service.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.consul.serviceAccountName }}
+    namespace: {{ .Values.namespace }}
+{{- end }}

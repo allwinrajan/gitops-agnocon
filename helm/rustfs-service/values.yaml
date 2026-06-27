@@ -1,0 +1,129 @@
+replicaCount: 1
+
+image:
+  repository: rustfs/rustfs
+  tag: latest
+  pullPolicy: IfNotPresent
+
+namespace: rustfs
+
+# RustFS Configuration
+rustfs:
+  rootUser: admin
+  rootPassword: "Admin@123"
+  mode: standalone
+  consolePort: 9001
+  apiPort: 9000
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-rustfs-179
+
+# Consul
+consul:
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  # connect-inject: true — Consul injects an Envoy sidecar. Health checks go
+  connectInject: true
+
+  # The name this service is registered under in Consul.
+  serviceName: "rustfs-service"
+
+  # ServiceAccount — MUST match serviceName (Consul webhook enforces this).
+  serviceAccountName: "rustfs-service"
+
+  # Availability zone tag written into Consul service metadata.
+  zone: "ZONE-1"
+
+  # All app ports excluded from Envoy transparent proxy.
+  excludeInboundPorts:  "9000,9001"
+  excludeOutboundPorts: "9000,9001"
+
+# Init containers
+initContainers:
+  fixRouting:
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+
+  waitForNetwork:
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    waitTimeout: 30
+    checkInterval: 2
+
+# Storage — dynamic provisioning via Longhorn
+storage:
+  storageClassName: local-path
+  size: 10Gi
+  accessMode: ReadWriteOnce
+
+# Service Configuration
+service:
+  type: ClusterIP
+  api:
+    port: 9000
+  console:
+    port: 9001
+
+# LoadBalancer Service via Multus
+loadBalancer:
+  enabled: false
+  annotations: {}
+  apiIP: ""
+  consoleIP: ""
+
+# Resource limits
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+
+# Security Context
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Probes
+startupProbe:
+  enabled: false
+
+livenessProbe:
+  enabled: false
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: false
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+
+# DNS — belt-and-suspenders for multi-node MacVLAN environments
+dnsPolicy: None
+dnsConfig:
+  nameservers:
+    - 10.96.0.10
+  searches:
+    - rustfs.svc.cluster.local
+    - svc.cluster.local
+    - cluster.local
+  options:
+    - name: ndots
+      value: "5"
+    - name: use-vc
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}

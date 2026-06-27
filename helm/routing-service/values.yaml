@@ -1,0 +1,94 @@
+replicaCount: 1
+
+# Namespace configuration
+namespace: freeswitch
+
+fullnameOverride: "routing-service"
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: routing-service-staging-v1.0.0
+  pullPolicy: Always
+  pullSecrets:
+    - name: regcred
+
+# Consul
+consul:
+  # KV fetch (startup.sh)
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  # Consul Connect inject (Envoy sidecar)
+  connectInject: true
+
+  # The name this service is registered under in Consul.
+  serviceName: "routing-service"
+
+  # ServiceAccount — MUST match serviceName (Consul webhook enforces this).
+  serviceAccountName: "routing-service"
+
+  # Availability zone tag written into Consul service metadata.
+  zone: "ZONE-1"
+
+  # App port excluded from Envoy transparent proxy.
+  excludeInboundPorts:  "9999"
+  excludeOutboundPorts: "9999,8021"
+
+# StatefulSet
+statefulset:
+  serviceName: routing-service
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  terminationGracePeriodSeconds: 15
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-routing-engine
+
+# Init containers
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+  waitForNetwork:
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    waitTimeout: 30
+    checkInterval: 2
+
+# Service
+service:
+  type: ClusterIP
+  port: 9999
+  targetPort: 9999
+
+# Resources
+resources:
+  requests:
+    cpu: "4"
+    memory: "4Gi"
+  limits:
+    cpu: "5"
+    memory: "5Gi"
+
+healthCheck:
+  enabled: false
+  path: /health
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}

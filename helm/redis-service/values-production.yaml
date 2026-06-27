@@ -1,0 +1,5 @@
+# redis-service — production overlay
+# Merged on top of values.yaml:  helm -f values.yaml -f values-production.yaml
+
+consul:
+  token: "PROD-CONSUL-TOKEN-REPLACE-ME"

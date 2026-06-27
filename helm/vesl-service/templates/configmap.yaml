@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vesl-service.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "vesl-service.labels" . | nindent 4 }}
+data:
+  # ── startup.sh — rendered from configs/startup.sh at helm time ──────────────
+  startup.sh: |
+{{ .Files.Get "configs/startup.sh" | indent 4 }}
+

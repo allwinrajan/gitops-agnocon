@@ -1,0 +1,17 @@
+apiVersion: v2
+name: multus-nad
+description: >
+  Creates Multus NetworkAttachmentDefinitions (MacVLAN) across all namespaces
+  from a single values file. Toggle single-node (host-local IPAM) or multi-node
+  (whereabouts IPAM) with `mode`. Per-NAD name/namespace/range overrides supported.
+  rtp-core and sbc-core manage their own per-pod NADs and are NOT created here.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - multus
+  - macvlan
+  - networkattachmentdefinition
+  - cni
+maintainers:
+  - name: Agnocon

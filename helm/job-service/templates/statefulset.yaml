@@ -1,0 +1,173 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "job-service.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "job-service.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "job-service.fullname" . }}
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: {{ .Values.statefulset.podManagementPolicy }}
+  updateStrategy:
+    type: {{ .Values.statefulset.updateStrategy.type }}
+  selector:
+    matchLabels:
+      {{- include "job-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "job-service.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+        {{- if .Values.consul.serviceName }}
+        # Consul Connect sidecar injection — Envoy handles health checks over
+        # eth0 (pod network). Works on any node regardless of MacVLAN topology.
+        # ACD is a pure NATS consumer — no inbound app ports to exclude.
+        # Envoy only listens on port 20000 (kubelet health probe over eth0).
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        # Placeholder annotations — consul-tag-patcher overwrites these with
+        # the live Multus IP before Consul Connect reads them.
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.statefulset.terminationGracePeriodSeconds }}
+      {{- if .Values.consul.serviceName }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      initContainers:
+        # Step 1 — fix routing:
+        #   a) Route cluster CIDRs via eth0 so consul-connect-inject-init and
+        #      the Envoy sidecar can reach consul-server and the K8s API.
+        #   b) Policy routing table 100 so eth0-sourced packets reply via eth0
+        #      — prevents asymmetric routing that causes Envoy readiness probe
+        #      i/o timeout and leaves pods stuck at 1/2.
+        {{- include "acd.fixRouting" . | nindent 8 }}
+
+        # Step 2 — patch pod annotations with the live Multus (MacVLAN) IP.
+        # Consul Connect reads these when registering the service so service-meta
+        # shows the correct MacVLAN address.
+        # No direct HTTP API registration — Consul Connect owns the lifecycle.
+        {{- if .Values.consul.serviceName }}
+        {{- include "acd.consulTagPatcher" (dict "nadName" .Values.multus.networkAttachmentDefinition "port" "3000" "ctx" .) | nindent 8 }}
+        {{- end }}
+
+        # Step 3 — confirm MacVLAN interface is fully up before main container starts
+        {{- if .Values.multus.enabled }}
+        - name: wait-for-network
+          image: {{ .Values.initContainers.waitForNetwork.image }}
+          imagePullPolicy: {{ .Values.initContainers.waitForNetwork.imagePullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              for i in $(seq 1 {{ .Values.initContainers.waitForNetwork.waitTimeout }}); do
+                if ip addr show | grep -E "net1|eth1"; then
+                  echo "[wait-for-network] MacVLAN interface found"
+                  ip addr show
+                  exit 0
+                fi
+                echo "[wait-for-network] Attempt $i — waiting {{ .Values.initContainers.waitForNetwork.checkInterval }}s..."
+                sleep {{ .Values.initContainers.waitForNetwork.checkInterval }}
+              done
+              echo "[wait-for-network] WARNING: MacVLAN interface not found after timeout — continuing anyway"
+              exit 0
+        {{- end }}
+
+      containers:
+        - name: job-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "/app/startup.sh"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/startup.sh
+              subPath: startup.sh
+            {{- if .Values.persistence.enabled }}
+            - name: logs
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          {{- if .enabled }}
+          livenessProbe:
+            exec:
+              {{- toYaml .exec | nindent 14 }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds:       {{ .periodSeconds }}
+            timeoutSeconds:      {{ .timeoutSeconds }}
+            failureThreshold:    {{ .failureThreshold }}
+          {{- end }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          {{- if .enabled }}
+          readinessProbe:
+            exec:
+              {{- toYaml .exec | nindent 14 }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds:       {{ .periodSeconds }}
+            timeoutSeconds:      {{ .timeoutSeconds }}
+            failureThreshold:    {{ .failureThreshold }}
+          {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "job-service.fullname" . }}-config
+            defaultMode: 0755
+        {{- if .Values.persistence.enabled }}
+        - name: logs
+          persistentVolumeClaim:
+            claimName: {{ include "job-service.pvcName" . }}
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

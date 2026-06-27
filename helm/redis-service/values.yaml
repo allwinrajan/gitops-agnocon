@@ -1,0 +1,109 @@
+# Redis HA Sentinel — values.yaml
+
+namespace: redis
+
+# Image
+image:
+  redis: "redis/redis-stack-server:7.2.0-v10"
+  pullPolicy: IfNotPresent
+
+# Auth — Redis 7.x ACL (username + password via aclfile)
+auth:
+  enabled: true
+  username: "admin"
+  password: "Admin@123"
+
+# Redis runtime config
+redis:
+  notifyKeyspaceEvents: "ExgKlt"   # $ omitted — written directly in redis.conf and CONFIG SET
+  appendonly: "yes"
+  appendfsync: "everysec"
+  maxmemory: "200mb"
+  maxmemoryPolicy: "allkeys-lru"
+  tcpKeepalive: 30
+  hz: 15
+  pubsubClientOutputBufferLimit: "pubsub 67108864 33554432 60"
+  extraConfig: ""
+
+# Sentinel
+sentinel:
+  replicas: 3
+  port: 26379
+  masterName: "mymaster"
+  quorum: 2
+  downAfterMs: 5000
+  failoverTimeout: 10000
+  parallelSyncs: 1
+
+# Multus / MacVLAN (feature flag) — PRIMARY ONLY gets a MacVLAN IP (emng).
+multus:
+  # PRIMARY ONLY gets a MacVLAN IP (emng). Replicas/Sentinels use eth0.
+  primary:
+    enabled: true
+    nadName: "macvlan-redis-primary"
+  replica1:
+    enabled: false
+    nadName: "macvlan-redis-replica1"
+  replica2:
+    enabled: false
+    nadName: "macvlan-redis-replica2"
+  sentinel:
+    enabled: false
+    nadName: ""
+
+# Consul — connect-inject Envoy sidecar (same mechanism as MySQL)
+consul:
+  enabled: true
+  url: "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  serviceName: "redis-service"
+  serviceAccountName: "redis-service"
+  zone: "ZONE-1"
+  excludeInboundPorts:  "6379,26379"
+  excludeOutboundPorts: "6379,26379"
+
+# Storage — sizes match existing PVCs exactly so Kubernetes binds to them.
+storage:
+  storageClass: "longhorn-redis"
+  primary:
+    size: "15Gi"
+  replica:
+    size: "10Gi"
+
+# Resources
+resources:
+  primary:
+    requests:
+      cpu: "2000m"
+      memory: "3Gi"
+    limits:
+      cpu: "2000m"
+      memory: "3Gi"
+  replica:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  sentinel:
+    requests:
+      cpu: "100m"
+      memory: "500Mi"
+    limits:
+      cpu: "100m"
+      memory: "500Mi"
+
+# Probes
+probes:
+  enabled: false
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3

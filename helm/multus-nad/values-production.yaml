@@ -1,0 +1,5 @@
+# multus-nad — production overlay
+# Multi-node cluster → whereabouts IPAM (requires the whereabouts CNI plugin).
+# Merged on top of values.yaml:  helm -f values.yaml -f values-production.yaml
+
+mode: multi

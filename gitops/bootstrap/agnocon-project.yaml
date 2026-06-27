@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: agnocon
+  namespace: argocd
+  labels:
+    agnocon.io/part-of: agnocon
+spec:
+  description: "Agnocon Platform - GitOps"
+  sourceRepos:
+    - "https://github.com/AlvinAgnoshin/agnocon-argo-cicd.git"
+    - "https://github.com/AlvinAgnoshin/*"
+  destinations:
+    - namespace: admin-app
+      server: https://kubernetes.default.svc
+    - namespace: freeswitch
+      server: https://kubernetes.default.svc
+    - namespace: influxdb
+      server: https://kubernetes.default.svc
+    - namespace: kamailio
+      server: https://kubernetes.default.svc
+    - namespace: multus-nad
+      server: https://kubernetes.default.svc
+    - namespace: mysql-cluster
+      server: https://kubernetes.default.svc
+    - namespace: nats
+      server: https://kubernetes.default.svc
+    - namespace: observability
+      server: https://kubernetes.default.svc
+    - namespace: postgres-cluster
+      server: https://kubernetes.default.svc
+    - namespace: redis
+      server: https://kubernetes.default.svc
+    - namespace: rtpengine
+      server: https://kubernetes.default.svc
+    - namespace: rustfs
+      server: https://kubernetes.default.svc
+    - namespace: watchdog
+      server: https://kubernetes.default.svc
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  orphanedResources:
+    warn: false

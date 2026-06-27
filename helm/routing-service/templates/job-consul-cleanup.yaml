@@ -1,0 +1,101 @@
+{{- if .Values.consul.serviceName }}
+---
+# pre-install / pre-upgrade Job — purges stale Consul registrations
+# from a previous helm release before new pods come up.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: routing-consul-cleanup
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "freeswitch-dialplan.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  ttlSecondsAfterFinished: 120
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: consul-cleanup
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+            - name: CONSUL_SERVICE_NAME
+              value: {{ .Values.consul.serviceName | quote }}
+            - name: REPLICA_COUNT
+              value: {{ .Values.replicaCount | quote }}
+          command:
+            - python3
+            - -u
+            - -c
+            - |
+              import json, os, ssl, sys, urllib.request, urllib.error
+
+              def log(msg): print(f"[consul-cleanup] {msg}", flush=True)
+
+              consul_url    = os.environ["CONSUL_URL"]
+              consul_token  = os.environ["CONSUL_TOKEN"]
+              svc_name      = os.environ["CONSUL_SERVICE_NAME"]
+              replica_count = int(os.environ.get("REPLICA_COUNT", "1"))
+
+              ssl_ctx = ssl.create_default_context()
+              ssl_ctx.check_hostname = False
+              ssl_ctx.verify_mode    = ssl.CERT_NONE
+
+              def consul_req(method, path, body=None):
+                  url = f"{consul_url}{path}"
+                  req = urllib.request.Request(url, data=body, method=method,
+                      headers={"X-Consul-Token": consul_token})
+                  try:
+                      with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                          return r.status, r.read()
+                  except urllib.error.HTTPError as e:
+                      return e.code, b""
+
+              # Fetch all registered instances of the service
+              try:
+                  req = urllib.request.Request(
+                      f"{consul_url}/v1/catalog/service/{svc_name}",
+                      headers={"X-Consul-Token": consul_token})
+                  with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                      instances = json.loads(r.read())
+              except Exception as e:
+                  log(f"Could not list instances (first install?): {e}")
+                  sys.exit(0)
+
+              if not instances:
+                  log("No existing instances found — nothing to clean up")
+                  sys.exit(0)
+
+              log(f"Found {len(instances)} existing instance(s) for {svc_name}")
+
+              # Build expected stable IDs for this release:
+              # pattern: routing-service-routing-service-<ordinal>
+              expected_ids = {
+                  f"{svc_name}-{svc_name}-{i}"
+                  for i in range(replica_count)
+              }
+              log(f"Expected IDs: {expected_ids}")
+
+              for inst in instances:
+                  sid       = inst.get("ServiceID", "")
+                  node_addr = inst.get("Address", "")
+                  if sid not in expected_ids:
+                      log(f"Deregistering stale: {sid} on node {node_addr}")
+                      # Deregister via catalog (server-side), no agent IP needed
+                      status, _ = consul_req("PUT",
+                          f"/v1/catalog/deregister",
+                          body=json.dumps({"Node": inst.get("Node",""), "ServiceID": sid}).encode())
+                      log(f"  -> catalog deregister HTTP {status}")
+                  else:
+                      log(f"Keeping valid instance: {sid}")
+
+              log("Cleanup complete")
+{{- end }}

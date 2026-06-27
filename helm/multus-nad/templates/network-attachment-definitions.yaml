@@ -1,0 +1,64 @@
+{{- /*
+  multus-nad — render one NetworkAttachmentDefinition per entry in .Values.nads.
+
+  Global defaults (.Values.defaults) apply to every NAD unless the entry overrides
+  them. `mode` selects the IPAM backend:
+    single → host-local  (subnet + rangeStart + rangeEnd + gateway)   — one node
+    multi  → whereabouts (range  + range_start + range_end)           — many nodes
+
+  Each NAD's namespace must already exist (Argo wave -2 / bootstrap creates them).
+*/ -}}
+{{- $defaults := .Values.defaults -}}
+{{- $mode := .Values.mode -}}
+{{- range $nad := .Values.nads }}
+{{- if $nad.enabled }}
+{{- $master  := $nad.master  | default $defaults.master -}}
+{{- $gateway := $nad.gateway | default $defaults.gateway -}}
+{{- $subnet  := $nad.subnet  | default $defaults.subnet -}}
+{{- $dnsNs   := $nad.dns | default dict | dig "nameservers" $defaults.dns.nameservers -}}
+{{- $dnsDom  := $nad.dns | default dict | dig "domain"      $defaults.dns.domain -}}
+{{- $dnsSrch := $nad.dns | default dict | dig "search"      $defaults.dns.search -}}
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: {{ $nad.name }}
+  namespace: {{ $nad.namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/part-of: agnocon
+    agnocon.io/multus-mode: {{ $mode }}
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "type": "macvlan",
+    "master": "{{ $master }}",
+    "mode": "bridge",
+    "ipam": {
+    {{- if eq $mode "single" }}
+      "type": "host-local",
+      "subnet": "{{ $subnet }}",
+      "rangeStart": "{{ $nad.rangeStart }}",
+      "rangeEnd": "{{ $nad.rangeEnd }}",
+      "routes": [
+        { "dst": "0.0.0.0/0", "gw": "{{ $gateway }}" }
+      ],
+      "gateway": "{{ $gateway }}"
+    {{- else }}
+      "type": "whereabouts",
+      "range": "{{ $subnet }}",
+      "range_start": "{{ $nad.rangeStart }}",
+      "range_end": "{{ $nad.rangeEnd }}",
+      "routes": [
+        { "dst": "0.0.0.0/0", "gw": "{{ $gateway }}" }
+      ]
+    {{- end }}
+    },
+    "dns": {
+      "nameservers": {{ $dnsNs | toJson }},
+      "domain": "{{ $dnsDom }}",
+      "search": {{ $dnsSrch | toJson }}
+    }
+  }'
+{{- end }}
+{{- end }}

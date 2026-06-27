@@ -1,0 +1,101 @@
+{{- if .Values.service.headless.enabled }}
+---
+# Headless Service — used by StatefulSet for stable DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-headless
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: nats
+    port: {{ .Values.nats.ports.client }}
+    targetPort: {{ .Values.nats.ports.client }}
+    protocol: TCP
+  - name: monitor
+    port: {{ .Values.nats.ports.monitoring }}
+    targetPort: {{ .Values.nats.ports.monitoring }}
+    protocol: TCP
+  - name: cluster
+    port: {{ .Values.nats.ports.cluster }}
+    targetPort: {{ .Values.nats.ports.cluster }}
+    protocol: TCP
+  {{- if .Values.nats.websocket.enabled }}
+  - name: websocket
+    port: {{ .Values.nats.websocket.port }}
+    targetPort: {{ .Values.nats.websocket.port }}
+    protocol: TCP
+  {{- end }}
+  selector:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+{{- end }}
+---
+# ClusterIP Service — main access point for clients
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - name: nats
+    port: {{ .Values.nats.ports.client }}
+    targetPort: {{ .Values.nats.ports.client }}
+    protocol: TCP
+  - name: monitor
+    port: {{ .Values.nats.ports.monitoring }}
+    targetPort: {{ .Values.nats.ports.monitoring }}
+    protocol: TCP
+  {{- if .Values.nats.websocket.enabled }}
+  - name: websocket
+    port: {{ .Values.nats.websocket.port }}
+    targetPort: {{ .Values.nats.websocket.port }}
+    protocol: TCP
+  {{- end }}
+  selector:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+{{- if .Values.metrics.enabled }}
+---
+# Metrics Service — Prometheus scrape target
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-metrics
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.metrics.port }}"
+    prometheus.io/path: "/metrics"
+spec:
+  ports:
+  - name: metrics
+    port: {{ .Values.metrics.port }}
+    targetPort: {{ .Values.metrics.port }}
+    protocol: TCP
+  selector:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+{{- end }}

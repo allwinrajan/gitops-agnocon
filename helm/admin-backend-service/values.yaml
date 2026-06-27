@@ -1,0 +1,98 @@
+# Admin App API — values-staging.yaml
+
+namespace: admin-app
+
+replicaCount: 1
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: admin-backend-service-staging-v1.0.0
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: regcred
+
+nameOverride: ""
+fullnameOverride: "admin-backend-service"
+
+service:
+  type: ClusterIP
+  port: 5001
+
+tls:
+  enabled: true
+  secretName: admin-api-tls-hv-secret
+  mountPath: /etc/tls
+
+# Consul — Consul Connect inject (Envoy sidecar)
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  connectInject: true
+
+  # The name this service is registered under in Consul.
+  serviceName: "admin-backend-service"
+
+  # ServiceAccount — MUST match serviceName (Consul webhook enforces this).
+  serviceAccountName: "admin-backend-service"
+
+  # Availability zone tag written into Consul service metadata.
+  zone: "ZONE-1"
+
+  # API port excluded from Envoy transparent proxy.
+  excludeInboundPorts:  "5001"
+  excludeOutboundPorts: "5001"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-backend-service
+
+# dnsPolicy: None — hardcodes CoreDNS IP so DNS queries always go via eth0
+dnsPolicy: None
+dnsConfig:
+  nameservers:
+    - 10.96.0.10
+  searches:
+    - admin-app.svc.cluster.local
+    - svc.cluster.local
+    - cluster.local
+  options:
+    - name: ndots
+      value: "5"
+    - name: use-vc
+
+# Init container images
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+probes:
+  enabled: false
+  liveness:
+    httpGet:
+      path: /health
+      port: 5001
+    initialDelaySeconds: 60
+    periodSeconds: 10
+  readiness:
+    httpGet:
+      path: /health
+      port: 5001
+    initialDelaySeconds: 30
+    periodSeconds: 5
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "700m"
+    memory: "1Gi"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

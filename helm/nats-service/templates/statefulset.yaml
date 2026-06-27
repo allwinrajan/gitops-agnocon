@@ -1,0 +1,301 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- with .Values.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  serviceName: nats-headless
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nats
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: nats
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+
+        {{- if .Values.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.metrics.port }}"
+        {{- end }}
+
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+
+        {{- if and .Values.tls.enabled .Values.tls.reloader.enabled }}
+        secret.reloader.stakater.com/reload: "{{ .Values.tls.secretName }},{{ .Values.tls.routeSecretName }}"
+        {{- end }}
+
+        {{- if .Values.consul.enabled }}
+        # Consul Connect sidecar injection — exact admin-frontend / watchdog pattern.
+        # Health checks go via eth0 (pod network) — MacVLAN never affects health status.
+        # transparent-proxy: false — NATS ports bypass Envoy entirely.
+        # StatefulSet pods use ServiceAccount identity for registration (not pod name).
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        # Placeholder — consul-tag-patcher overwrites with live Multus IP at startup
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:        "nats-server"
+        {{- end }}
+
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+
+    spec:
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+
+      dnsPolicy: {{ .Values.dnsPolicy | default "None" }}
+      dnsConfig:
+        nameservers:
+          - 10.96.0.10
+        searches:
+          - nats-prod.svc.cluster.local
+          - svc.cluster.local
+          - cluster.local
+        options:
+          - name: ndots
+            value: "5"
+
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      initContainers:
+        # Step 1 — fix routing:
+        #   a) Cluster CIDRs via eth0 so Envoy sidecar reaches consul-server.
+        #   b) Policy table 100 — eth0 IP replies via eth0 (fixes port 20000 probe).
+        #   c) Policy table 200 — preserve LAN → MacVLAN net1 routing.
+        {{- include "nats.fixRouting" . | nindent 8 }}
+
+        # Step 2 — patch pod annotations with live Multus IP.
+        # Consul Connect reads these when registering — service-meta is correct.
+        # No direct HTTP API registration — Consul Connect owns the lifecycle.
+        {{- if .Values.consul.enabled }}
+        {{- include "nats.consulTagPatcher" (dict "nadName" .Values.multus.networkAttachmentDefinition "port" (toString .Values.nats.ports.client) "ctx" .) | nindent 8 }}
+        {{- end }}
+
+        # Step 3 — init JetStream directory
+        - name: init-jetstream
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Initializing JetStream directory..."
+              mkdir -p /data/jetstream
+              chmod -R 777 /data/jetstream
+              chown -R 1000:1000 /data/jetstream 2>/dev/null || true
+              echo "Done — contents:"
+              ls -la /data/
+          volumeMounts:
+            - name: jetstream
+              mountPath: /data/jetstream
+
+      containers:
+        # ── 1. NATS Server ──────────────────────────────────────────────────
+        - name: nats
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.nats.ports.client }}
+              name: client
+            - containerPort: {{ .Values.nats.ports.monitoring }}
+              name: monitor
+            - containerPort: {{ .Values.nats.ports.cluster }}
+              name: cluster
+            {{- if .Values.nats.websocket.enabled }}
+            - containerPort: {{ .Values.nats.websocket.port }}
+              name: websocket
+            {{- end }}
+          args:
+            - "--config"
+            - "/etc/nats-config/nats.conf"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVER_NAME
+              value: "$(POD_NAME)"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CLUSTER_ADVERTISE
+              value: "$(POD_NAME).nats-headless.$(POD_NAMESPACE).svc.cluster.local"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.healthChecks.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: {{ .Values.healthChecks.startup.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.healthChecks.startup.periodSeconds }}
+            timeoutSeconds:      {{ .Values.healthChecks.startup.timeoutSeconds }}
+            successThreshold:    {{ .Values.healthChecks.startup.successThreshold }}
+            failureThreshold:    {{ .Values.healthChecks.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.healthChecks.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: {{ .Values.healthChecks.liveness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.healthChecks.liveness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.healthChecks.liveness.timeoutSeconds }}
+            successThreshold:    {{ .Values.healthChecks.liveness.successThreshold }}
+            failureThreshold:    {{ .Values.healthChecks.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.healthChecks.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /healthz?js-enabled-only=true
+              port: monitor
+            initialDelaySeconds: {{ .Values.healthChecks.readiness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.healthChecks.readiness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.healthChecks.readiness.timeoutSeconds }}
+            successThreshold:    {{ .Values.healthChecks.readiness.successThreshold }}
+            failureThreshold:    {{ .Values.healthChecks.readiness.failureThreshold }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats-config
+            - name: pid
+              mountPath: /var/run/nats
+            - name: jetstream
+              mountPath: /data/jetstream
+            - name: logs
+              mountPath: /var/log/nats
+            {{- if .Values.tls.enabled }}
+            - name: nats-client-tls
+              mountPath: /etc/nats/tls
+              readOnly: true
+            - name: nats-route-tls
+              mountPath: /etc/nats/route-tls
+              readOnly: true
+            {{- end }}
+
+        # ── 2. Config Reloader ──────────────────────────────────────────────
+        - name: reloader
+          image: "{{ .Values.reloader.image.repository }}:{{ .Values.reloader.image.tag }}"
+          imagePullPolicy: {{ .Values.reloader.image.pullPolicy }}
+          args:
+            - "-pid"
+            - "/var/run/nats/nats.pid"
+            - "-config"
+            - "/etc/nats-config/nats.conf"
+          resources:
+            {{- toYaml .Values.reloader.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats-config
+            - name: pid
+              mountPath: /var/run/nats
+
+        # ── 3. Prometheus Metrics Exporter ──────────────────────────────────
+        {{- if .Values.metrics.enabled }}
+        - name: metrics
+          image: "{{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}"
+          imagePullPolicy: {{ .Values.metrics.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.metrics.port }}
+              name: metrics
+          args:
+            - "-connz"
+            - "-routez"
+            - "-subz"
+            - "-varz"
+            - "-jsz=all"
+            - "-prefix=nats"
+            - "-use_internal_server_id"
+            - "-DV"
+            {{- if .Values.tls.enabled }}
+            - "https://localhost:{{ .Values.nats.ports.monitoring }}/"
+            {{- else }}
+            - "http://localhost:{{ .Values.nats.ports.monitoring }}/"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.metrics.resources | nindent 12 }}
+        {{- end }}
+
+      volumes:
+        - name: config
+          configMap:
+            name: nats-config
+        - name: pid
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        {{- if .Values.tls.enabled }}
+        - name: nats-client-tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+        - name: nats-route-tls
+          secret:
+            secretName: {{ .Values.tls.routeSecretName }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
+
+  volumeClaimTemplates:
+    - metadata:
+        name: jetstream
+      spec:
+        accessModes: ["{{ .Values.persistence.accessMode }}"]
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

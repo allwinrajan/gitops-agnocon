@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "acd-service.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "acd-service.labels" . | nindent 4 }}
+data:
+  # startup.sh is the only thing this ConfigMap needs to provide.
+  # It fetches all values from Consul KV under acd-service/ and
+  # writes /app/.env directly. The app reads .env — not process.env.
+  startup.sh: |
+{{ .Files.Get "configs/startup.sh" | indent 4 }}

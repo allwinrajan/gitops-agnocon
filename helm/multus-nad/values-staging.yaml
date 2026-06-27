@@ -1,0 +1,5 @@
+# multus-nad — staging overlay
+# Single-node cluster → host-local IPAM.
+# Merged on top of values.yaml:  helm -f values.yaml -f values-staging.yaml
+
+mode: single

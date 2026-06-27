@@ -1,0 +1,23 @@
+# ClusterIP service — for internal cluster access to vesl-service pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vesl-service.fullname" . }}-svc
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "vesl-service.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "vesl-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: esl
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+    {{- range .Values.service.additionalPorts }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort }}
+      protocol: {{ .protocol }}
+    {{- end }}

@@ -1,0 +1,212 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "vesl-service.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "vesl-service.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "vesl-service.fullname" . }}
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: {{ .Values.statefulset.podManagementPolicy }}
+  updateStrategy:
+    type: {{ .Values.statefulset.updateStrategy.type }}
+  selector:
+    matchLabels:
+      {{- include "vesl-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+        {{- if .Values.consul.serviceName }}
+        # Consul Connect sidecar injection — Envoy handles health checks over
+        # eth0 (pod network). Works on any node regardless of MacVLAN topology.
+        # transparent-proxy disabled so all app ports (8085, 3000, 5000) bypass
+        # Envoy entirely. Envoy only listens on port 20000 for kubelet probes.
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        # Placeholder annotations — consul-tag-patcher overwrites these with
+        # the live Multus IP before Consul Connect reads them.
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "vesl-service.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.statefulset.terminationGracePeriodSeconds }}
+      {{- if .Values.consul.serviceName }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      dnsPolicy: {{ .Values.dnsPolicy | default "ClusterFirst" }}
+      {{- if eq (.Values.dnsPolicy | default "ClusterFirst") "None" }}
+      dnsConfig:
+        {{- toYaml .Values.dnsConfig | nindent 8 }}
+      {{- end }}
+
+      initContainers:
+        # Step 1 — fix routing:
+        #   a) Route cluster CIDRs via eth0 so consul-connect-inject-init and
+        #      the Envoy sidecar can reach consul-server and the K8s API.
+        #   b) Policy routing table 100 so eth0-sourced packets reply via eth0
+        #      — prevents asymmetric routing that causes Envoy readiness probe
+        #      i/o timeout and leaves pods stuck at 1/2.
+        {{- include "vesl.fixRouting" . | nindent 8 }}
+
+        # Step 2 — patch pod annotations with the live Multus (MacVLAN) IP.
+        # Consul Connect reads these when registering the service so service-meta
+        # shows the correct MacVLAN address for routing lookups.
+        # No direct HTTP API registration — Consul Connect owns the lifecycle.
+        {{- if .Values.consul.serviceName }}
+        {{- include "vesl.consulTagPatcher" (dict "nadName" .Values.multus.networkAttachmentDefinition "port" (toString .Values.service.targetPort) "ctx" .) | nindent 8 }}
+        {{- end }}
+
+        # Step 3 — wait for Multus interface to be fully up before app starts
+        {{- if .Values.multus.enabled }}
+        - name: wait-for-network
+          image: {{ .Values.initContainers.waitForNetwork.image }}
+          imagePullPolicy: {{ .Values.initContainers.waitForNetwork.imagePullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              for i in $(seq 1 {{ .Values.initContainers.waitForNetwork.waitTimeout }}); do
+                if ip addr show | grep -E "net1|eth1"; then
+                  echo "[wait-for-network] Multus interface found"; ip addr show; exit 0
+                fi
+                echo "[wait-for-network] Attempt $i..."; sleep {{ .Values.initContainers.waitForNetwork.checkInterval }}
+              done
+              exit 0
+        {{- end }}
+
+      containers:
+        - name: vesl-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/bash", "/app/startup.sh"]
+          ports:
+            - name: esl
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+            {{- range .Values.service.additionalPorts }}
+            - name: {{ .name }}
+              containerPort: {{ .targetPort }}
+              protocol: {{ .protocol }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/startup.sh
+              subPath: startup.sh
+            {{- if .Values.recordingVolume.enabled }}
+            - name: recordings
+              mountPath: {{ .Values.recordingVolume.mountPath }}
+            {{- end }}
+            {{- if .Values.trustStore.enabled }}
+            - name: truststore-certs
+              mountPath: {{ .Values.trustStore.mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- if .Values.healthCheck.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: {{ .Values.service.targetPort }}
+            initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
+            periodSeconds:        {{ .Values.healthCheck.livenessProbe.periodSeconds }}
+            timeoutSeconds:       {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
+            failureThreshold:     {{ .Values.healthCheck.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: {{ .Values.service.targetPort }}
+            initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
+            periodSeconds:        {{ .Values.healthCheck.readinessProbe.periodSeconds }}
+            timeoutSeconds:       {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
+            failureThreshold:     {{ .Values.healthCheck.readinessProbe.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "vesl-service.fullname" . }}-config
+            defaultMode: 0755
+        {{- if .Values.recordingVolume.enabled }}
+        - name: recordings
+          {{- if eq .Values.recordingVolume.type "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.recordingVolume.claimName }}
+          {{- else }}
+          hostPath:
+            path: {{ .Values.recordingVolume.hostPath }}
+            type: DirectoryOrCreate
+          {{- end }}
+        {{- end }}
+        {{- if .Values.trustStore.enabled }}
+        - name: truststore-certs
+          secret:
+            secretName: {{ .Values.trustStore.secretName }}
+            items:
+              - key: {{ .Values.trustStore.secretKey }}
+                path: {{ .Values.trustStore.certFileName }}
+            defaultMode: 0644
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: recordings
+      spec:
+        accessModes: [{{ .Values.persistence.accessMode | quote }}]
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

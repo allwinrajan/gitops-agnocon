@@ -1,0 +1,68 @@
+# Telegraf — metrics agent. Reads system metrics + NATS IVR events,
+# writes to PostgreSQL/TimescaleDB. Stateless Deployment, no inbound port.
+
+replicaCount: 1
+
+image:
+  repository: telegraf
+  tag: "1.30-alpine"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+namespace: observability
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-telegraf-service
+
+# Init container images (fix-routing removes MacVLAN default-route hijack)
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+# NATS CA certificate (mounted at /etc/telegraf/ca.crt for TLS to core NATS)
+natsCa:
+  enabled: true
+  secretName: nats-tls-hv-secret
+  key: ca.crt
+  mountPath: /etc/telegraf/ca.crt
+
+# Consul — connect-inject Envoy sidecar. serviceAccountName MUST equal serviceName.
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  serviceName: "telegraf-service"
+  serviceAccountName: "telegraf-service"
+  zone: "ZONE-1"
+  # Telegraf is an agent — outbound to postgres 5432 + nats 4222 bypass Envoy.
+  excludeInboundPorts:  "5432,4222"
+  excludeOutboundPorts: "5432,4222"
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+dnsPolicy: ClusterFirst
+dnsConfig:
+  nameservers:
+    - 10.96.0.10
+  searches:
+    - observability.svc.cluster.local
+    - svc.cluster.local
+    - cluster.local
+  options:
+    - name: ndots
+      value: "5"

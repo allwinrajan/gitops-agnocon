@@ -1,0 +1,33 @@
+Apache Superset has been deployed.
+
+  Release  : {{ .Release.Name }}
+  Version  : {{ .Chart.AppVersion }}
+  Namespace: {{ .Values.namespace }}
+
+=== Automated Bootstrap (init container) ===
+  The following manual steps are now fully automated on every deploy:
+
+  1. pip install mysql-connector-python PyMySQL
+     → MySQL now appears in Settings → Database Connections UI
+  2. superset db upgrade
+     → All Alembic migrations applied (idempotent)
+  3. superset fab create-admin
+     → Admin user created (idempotent, safe on re-deploy)
+  4. superset init
+     → Roles & permissions synced (Admin/Alpha/Gamma/sql_lab)
+
+=== Supported database drivers (after boot) ===
+  PostgreSQL, MySQL, SQLite, Presto  — visible in the "Connect a database" dialog
+
+=== Metadata DB ===
+  {{ .Values.superset.sqlalchemyDatabaseUri }}
+
+=== Access ===
+  kubectl port-forward -n {{ .Values.namespace }} svc/{{ include "superset-service.fullname" . }} 8088:8088
+  Open  : http://localhost:8088
+  Login : {{ .Values.superset.adminUser.username }} / {{ .Values.superset.adminUser.password }}
+
+=== Watch bootstrap logs ===
+  kubectl logs -n {{ .Values.namespace }} \
+    $(kubectl get pod -n {{ .Values.namespace }} -l app=superset -o name | head -1) \
+    -c superset-init -f

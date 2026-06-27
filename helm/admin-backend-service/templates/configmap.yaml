@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "admin-app-api.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "admin-app-api.labels" . | nindent 4 }}
+data:
+  # startup.sh is the only file this ConfigMap needs to provide.
+  # It fetches all env values from Consul KV under admin-backend/
+  # and writes /app/.env before the Node.js app starts.
+  startup.sh: |
+{{ .Files.Get "configs/startup.sh" | indent 4 }}

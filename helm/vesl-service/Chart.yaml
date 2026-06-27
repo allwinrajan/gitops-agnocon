@@ -1,0 +1,14 @@
+apiVersion: v2
+name: vesl-service
+description: ESL Routing Engine — StatefulSet with Multus and Consul-driven runtime config
+type: application
+version: 1.0.0
+appVersion: "11.0"
+keywords:
+  - freeswitch
+  - esl
+  - routing
+  - multus
+  - consul
+maintainers:
+  - name: Agnocon Team

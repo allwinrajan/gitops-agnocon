@@ -1,0 +1,94 @@
+replicaCount: 1
+
+fullnameOverride: "acd-service"
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: acd-service-staging-v1.0.0
+  pullPolicy: Always
+  pullSecrets:
+    - name: regcred
+
+namespace: freeswitch
+
+# Consul
+consul:
+  # KV fetch (startup.sh)
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  # Consul Connect inject (Envoy sidecar)
+  connectInject: true
+
+  # The name this service is registered under in Consul.
+  serviceName: "acd-service"
+
+  # ServiceAccount — MUST match serviceName (Consul webhook enforces this).
+  serviceAccountName: "acd-service"
+
+  # Availability zone tag written into Consul service metadata.
+  zone: "ZONE-1"
+
+  # ACD is a pure NATS consumer — no inbound app ports to exclude.
+  excludeInboundPorts:  "8501"
+  excludeOutboundPorts: "8501"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-acd-service
+
+# Init containers
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+  waitForNetwork:
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    waitTimeout: 30
+    checkInterval: 2
+
+# StatefulSet
+statefulset:
+  serviceName: acd-service
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  terminationGracePeriodSeconds: 15
+
+# Service
+service:
+  enabled: false   # ACD Engine is a pure NATS consumer — no inbound ports needed
+
+resources:
+  requests:
+    cpu: "4"
+    memory: "4Gi"
+  limits:
+    cpu: "5"
+    memory: "5Gi"
+
+persistence:
+  enabled: false
+  size: 2Gi
+  mountPath: /app/logs
+  accessMode: ReadWriteOnce
+  storageClass: ""
+
+securityContext:
+  runAsUser: 0
+  capabilities:
+    add: ["NET_ADMIN"]
+
+podSecurityContext: {}
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+livenessProbe:
+  enabled: false
+readinessProbe:
+  enabled: false

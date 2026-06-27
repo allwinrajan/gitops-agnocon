@@ -1,0 +1,49 @@
+{{- if .Values.consul.enabled }}
+---
+# ServiceAccount — nats-service
+# CRITICAL: serviceAccountName MUST equal serviceName (Consul webhook enforces this)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.consul.serviceAccountName }}-pod-patcher
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.consul.serviceAccountName }}
+    namespace: {{ .Values.namespace }}
+{{- end }}

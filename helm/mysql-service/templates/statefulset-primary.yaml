@@ -1,0 +1,159 @@
+---
+# ==============================================================================
+# StatefulSet: mysql-cluster-primary  (pod: mysql-cluster-primary-0)
+#
+# Role: MySQL Group Replication primary (single-primary mode).
+# Multus: net1 from macvlan-mysql-primary — LAN IP for external access.
+# Consul: connect-inject Envoy sidecar. consul-tag-patcher patches MacVLAN IP
+#         into service-meta so routing engine sees the LAN IP.
+# Resources: 1 CPU / 2Gi (Guaranteed QoS — request = limit).
+# Failover: GR automatic election. When this pod dies, the two secondaries
+#           vote and elect a new primary automatically (majority 2/3 → 2/2).
+#           bootstrap.sh detects the existing group on restart and joins
+#           instead of re-bootstrapping (avoids split-brain).
+# PVC: reuses existing data-mysql-cluster-primary-0 (15Gi longhorn-mysql).
+# terminationGracePeriodSeconds: 30 — gives GR time to detect member loss
+#   and start election before the pod is force-killed.
+# ==============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "mysql.name" . }}-primary
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: primary
+spec:
+  serviceName: {{ include "mysql.headlessSvc" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+      role: primary
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: mysql
+        role: primary
+      annotations:
+        # ── Multus MacVLAN — PRIMARY ONLY ────────────────────────────────────
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        # ── Consul Connect ───────────────────────────────────────────────────
+        {{- if .Values.consul.enabled }}
+        consul.hashicorp.com/connect-inject:                           "true"
+        consul.hashicorp.com/connect-service:                          {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy:                        "false"
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        # Placeholder — consul-tag-patcher overwrites with live MacVLAN IP
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:        "primary"
+        mysql.agnoshin.io/multus-ip:  "pending"
+        mysql.agnoshin.io/role:       "primary"
+        mysql.agnoshin.io/registered: "false"
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+
+      initContainers:
+        # Step 1: fix-routing — must run before consul-connect-inject-init
+        # so Envoy can reach consul-server over eth0 after MacVLAN hijacks default route.
+        {{- include "mysql.fixRouting" . | nindent 8 }}
+
+        # Step 2: consul-tag-patcher — patches pod annotations with MacVLAN IP
+        # so Consul service-meta carries 192.168.x.x (LAN IP, not pod IP).
+        {{- if .Values.consul.enabled }}
+        {{- include "mysql.consulTagPatcher" (dict
+              "nadName" .Values.multus.networkAttachmentDefinition
+              "port"    "3306"
+              "role"    "primary"
+              "ctx"     .) | nindent 8 }}
+        {{- end }}
+
+      containers:
+        - name: mysql
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["bash", "/scripts/entrypoint.sh"]
+          env:
+            - name: SERVER_ID
+              value: "1"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.name" . }}-secret
+                  key: root-password
+            - name: MYSQL_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.name" . }}-secret
+                  key: replication-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+            - name: gr-xcom
+              containerPort: {{ .Values.groupReplication.groupPort }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            exec:
+              command: ["bash", "/scripts/liveness.sh"]
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold:    {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            exec:
+              command: ["bash", "/scripts/readiness.sh"]
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold:    {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources.primary | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: config-rw
+              mountPath: /etc/mysql/conf.d
+            - name: config-ro
+              mountPath: /mnt/mysql-config
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+
+      volumes:
+        - name: config-rw
+          emptyDir: {}
+        - name: config-ro
+          configMap:
+            name: {{ include "mysql.name" . }}-config
+            defaultMode: 0444
+        - name: scripts
+          configMap:
+            name: {{ include "mysql.name" . }}-scripts
+            defaultMode: 0755
+
+  # PVC — matches existing data-mysql-cluster-primary-0 (15Gi)
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storage.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

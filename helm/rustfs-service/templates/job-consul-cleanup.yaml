@@ -1,0 +1,103 @@
+{{- if .Values.consul.serviceName }}
+# pre-install / pre-upgrade Job — purges stale Consul registrations
+# from a previous helm release before new pods come up.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rustfs-consul-cleanup
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rustfs.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  ttlSecondsAfterFinished: 120
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: consul-cleanup
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+            - name: CONSUL_SERVICE_NAME
+              value: {{ .Values.consul.serviceName | quote }}
+            - name: REPLICA_COUNT
+              value: {{ .Values.replicaCount | quote }}
+          command:
+            - python3
+            - -u
+            - -c
+            - |
+              import json, os, ssl, sys, urllib.request, urllib.error
+
+              def log(msg): print("[consul-cleanup] " + str(msg), flush=True)
+
+              consul_url    = os.environ["CONSUL_URL"]
+              consul_token  = os.environ["CONSUL_TOKEN"]
+              svc_name      = os.environ["CONSUL_SERVICE_NAME"]
+              replica_count = int(os.environ.get("REPLICA_COUNT", "1"))
+
+              ssl_ctx = ssl.create_default_context()
+              ssl_ctx.check_hostname = False
+              ssl_ctx.verify_mode    = ssl.CERT_NONE
+
+              def consul_get(path):
+                  url = consul_url + path
+                  req = urllib.request.Request(url, headers={"X-Consul-Token": consul_token})
+                  with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                      return json.loads(r.read())
+
+              try:
+                  instances = consul_get("/v1/catalog/service/" + svc_name)
+              except Exception as e:
+                  log("Could not list instances (first install?): " + str(e))
+                  sys.exit(0)
+
+              if not instances:
+                  log("No existing instances found — nothing to clean up")
+                  sys.exit(0)
+
+              log("Found " + str(len(instances)) + " existing instance(s) for " + svc_name)
+
+              # Expected stable IDs that Consul Connect generates:
+              # <svc_name>-<svc_name>-<ordinal>
+              expected_ids = set(
+                  svc_name + "-" + svc_name + "-" + str(i)
+                  for i in range(replica_count)
+              )
+              log("Expected IDs: " + str(expected_ids))
+
+              for inst in instances:
+                  sid      = inst.get("ServiceID", "")
+                  node     = inst.get("Node", "")
+                  node_addr = inst.get("Address", "")
+                  if sid not in expected_ids:
+                      log("Deregistering stale: " + sid + " on node " + node)
+                      # Deregister via the catalog (server-side, no agent needed)
+                      url = consul_url + "/v1/catalog/deregister"
+                      body = json.dumps({
+                          "Node":      node,
+                          "ServiceID": sid,
+                      }).encode()
+                      req = urllib.request.Request(url, data=body, method="PUT",
+                          headers={"X-Consul-Token": consul_token,
+                                   "Content-Type": "application/json"})
+                      try:
+                          with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                              log("  -> deregistered (HTTP " + str(r.status) + ")")
+                      except urllib.error.HTTPError as e:
+                          log("  -> HTTP " + str(e.code) + ": " + e.read().decode()[:200])
+                      except Exception as e:
+                          log("  -> error: " + str(e))
+                  else:
+                      log("Keeping valid instance: " + sid)
+
+              log("Cleanup complete")
+{{- end }}

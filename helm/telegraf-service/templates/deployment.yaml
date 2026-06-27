@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "telegraf-service.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "telegraf-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "telegraf-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "telegraf-service.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Restart the pod when the telegraf.conf ConfigMap changes
+        checksum/config: {{ .Files.Get "configs/telegraf.conf" | sha256sum }}
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+        {{- if .Values.consul.enabled }}
+        # Consul Connect sidecar — Envoy health checks over eth0; transparent-proxy
+        # disabled so Telegraf's outbound traffic (postgres 5432, nats 4222) is direct.
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        {{- if .Values.multus.enabled }}
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        {{- end }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:        "telegraf"
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 15
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+      dnsPolicy: {{ .Values.dnsPolicy }}
+      {{- if eq .Values.dnsPolicy "None" }}
+      dnsConfig:
+        {{- toYaml .Values.dnsConfig | nindent 8 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Step 1 — fix routing so eth0 reaches Consul/API and Envoy probe passes.
+        {{- include "telegraf-service.fixRouting" . | nindent 8 }}
+        # Step 2 — patch annotations with the live MacVLAN IP (when multus enabled).
+        {{- if and .Values.consul.enabled .Values.multus.enabled }}
+        {{- include "telegraf-service.consulTagPatcher" (dict "nadName" .Values.multus.networkAttachmentDefinition "port" "9273" "ctx" .) | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--config"
+            - "/etc/telegraf/telegraf.conf"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          volumeMounts:
+            - name: telegraf-config
+              mountPath: /etc/telegraf/telegraf.conf
+              subPath: telegraf.conf
+              readOnly: true
+            {{- if .Values.natsCa.enabled }}
+            - name: nats-ca
+              mountPath: {{ .Values.natsCa.mountPath }}
+              subPath: ca.crt
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: telegraf-config
+          configMap:
+            name: {{ include "telegraf-service.fullname" . }}-config
+        {{- if .Values.natsCa.enabled }}
+        - name: nats-ca
+          secret:
+            secretName: {{ .Values.natsCa.secretName }}
+            items:
+              - key: {{ .Values.natsCa.key }}
+                path: ca.crt
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

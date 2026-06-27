@@ -1,0 +1,19 @@
+apiVersion: v2
+name: workspace-service
+description: Workspace Service UI — Deployment with Consul service registration, KV configuration, and Multus support
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - workspace
+  - admin
+  - ui
+  - consul
+  - multus
+  - nginx
+maintainers:
+  - name: DevOps Team
+    email: devops@example.com
+home: https://github.com/agnocon/workspace-service
+sources:
+  - https://github.com/agnocon/workspace-service

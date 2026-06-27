@@ -1,0 +1,7 @@
+freeswitch deployed 🎉
+
+Consul registration mirrors SBC (Kamailio) pattern:
+  - Envoy sidecar via connect-inject: true (health checks over eth0)
+  - transparent-proxy: false (SIP/ESL/WSS bypass Envoy)
+  - fix-routing init: policy table 100 fixes 1/2 probe timeout
+  - consul-tag-patcher init: MacVLAN IP written to service-meta

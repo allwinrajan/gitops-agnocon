@@ -1,0 +1,235 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "superset-service.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "superset-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "superset-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "superset-service.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+        {{- if .Values.consul.enabled }}
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:        "superset"
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+      dnsPolicy: {{ .Values.dnsPolicy }}
+
+      volumes:
+        - name: superset-config
+          configMap:
+            name: {{ include "superset-service.fullname" . }}-config
+        # emptyDir shared between init + main container for MySQL packages
+        - name: superset-pkgs
+          emptyDir: {}
+        {{- if .Values.persistence.enabled }}
+        - name: superset-data
+          persistentVolumeClaim:
+            claimName: {{ include "superset-service.fullname" . }}-data
+        {{- end }}
+
+      initContainers:
+        {{- include "superset-service.fixRouting" . | nindent 8 }}
+
+        {{- if .Values.consul.enabled }}
+        {{- include "superset-service.consulTagPatcher" (dict "nadName" .Values.multus.networkAttachmentDefinition "port" (toString .Values.service.port) "ctx" .) | nindent 8 }}
+        {{- end }}
+
+        - name: superset-init
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              export PATH="/app/.venv/bin:$PATH"
+              export PYTHONPATH="/tmp/superset-pkgs:/app:$PYTHONPATH"
+              export SUPERSET_CONFIG_PATH="/app/superset_config.py"
+
+              echo "[init] superset = $(which superset)"
+              echo "[init] config   = $SUPERSET_CONFIG_PATH"
+              echo "[init] db       = $SQLALCHEMY_DATABASE_URI"
+
+              # Install MySQL drivers to shared emptyDir /tmp/superset-pkgs
+              # System pip is writable; venv pip is not (non-root container).
+              # superset_config.py adds /tmp/superset-pkgs to sys.path so
+              # Gunicorn workers find the packages at startup.
+              echo "[init] Installing MySQL drivers..."
+              pip install --quiet --no-cache-dir \
+                --target /tmp/superset-pkgs \
+                "mysql-connector-python>=8.0.0,<9.0.0" \
+                PyMySQL
+              echo "[init] Drivers installed: $(ls /tmp/superset-pkgs | grep -E 'mysql|pymysql' | tr '\n' ' ')"
+
+              # superset db upgrade
+              echo "[init] Running db upgrade..."
+              superset db upgrade
+              echo "[init] DB upgrade done."
+
+              # create admin user (idempotent)
+              echo "[init] Creating admin user..."
+              superset fab create-admin \
+                --username  "{{ .Values.superset.adminUser.username }}" \
+                --firstname "{{ .Values.superset.adminUser.firstName }}" \
+                --lastname  "{{ .Values.superset.adminUser.lastName }}" \
+                --email     "{{ .Values.superset.adminUser.email }}" \
+                --password  "{{ .Values.superset.adminUser.password }}" 2>&1 | \
+                grep -v "already exists" || true
+              echo "[init] Admin user done."
+
+              # superset init
+              echo "[init] Running superset init..."
+              superset init
+              echo "[init] Done."
+          env:
+            - name: SUPERSET_SECRET_KEY
+              value: {{ .Values.superset.secretKey | quote }}
+            - name: SQLALCHEMY_DATABASE_URI
+              value: {{ .Values.superset.sqlalchemyDatabaseUri | quote }}
+            - name: SUPERSET_CONFIG_PATH
+              value: "/app/superset_config.py"
+            {{- if .Values.superset.redisUrl }}
+            - name: REDIS_URL
+              value: {{ .Values.superset.redisUrl | quote }}
+            - name: CELERY_BROKER_URL
+              value: {{ .Values.superset.redisUrl | quote }}
+            - name: CELERY_RESULT_BACKEND
+              value: {{ .Values.superset.redisUrl | quote }}
+            {{- end }}
+            {{- range $key, $val := .Values.superset.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: superset-config
+              mountPath: /app/superset_config.py
+              subPath: superset_config.py
+              readOnly: true
+            - name: superset-pkgs
+              mountPath: /tmp/superset-pkgs
+            {{- if .Values.persistence.enabled }}
+            - name: superset-data
+              mountPath: /var/lib/superset
+            {{- end }}
+
+      containers:
+        - name: superset
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export PATH="/app/.venv/bin:$PATH"
+              export PYTHONPATH="/tmp/superset-pkgs:/app:$PYTHONPATH"
+              export SUPERSET_CONFIG_PATH="/app/superset_config.py"
+              exec gunicorn \
+                --bind 0.0.0.0:8088 \
+                --workers 2 \
+                --worker-class gthread \
+                --threads 4 \
+                --timeout 120 \
+                --limit-request-line 0 \
+                --limit-request-field_size 0 \
+                "superset.app:create_app()"
+          ports:
+            - name: http
+              containerPort: 8088
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SUPERSET_SECRET_KEY
+              value: {{ .Values.superset.secretKey | quote }}
+            - name: SQLALCHEMY_DATABASE_URI
+              value: {{ .Values.superset.sqlalchemyDatabaseUri | quote }}
+            - name: SUPERSET_CONFIG_PATH
+              value: "/app/superset_config.py"
+            - name: SUPERSET_WEBSERVER_PORT
+              value: "8088"
+            {{- if .Values.superset.redisUrl }}
+            - name: REDIS_URL
+              value: {{ .Values.superset.redisUrl | quote }}
+            - name: CELERY_BROKER_URL
+              value: {{ .Values.superset.redisUrl | quote }}
+            - name: CELERY_RESULT_BACKEND
+              value: {{ .Values.superset.redisUrl | quote }}
+            {{- end }}
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+            - name: CONSUL_ZONE
+              value: {{ .Values.consul.zone | quote }}
+            - name: MULTUS_NAD
+              value: {{ .Values.multus.networkAttachmentDefinition | quote }}
+            {{- range $key, $val := .Values.superset.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.enabled }}
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: superset-config
+              mountPath: /app/superset_config.py
+              subPath: superset_config.py
+              readOnly: true
+            - name: superset-pkgs
+              mountPath: /tmp/superset-pkgs
+            {{- if .Values.persistence.enabled }}
+            - name: superset-data
+              mountPath: /var/lib/superset
+            {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

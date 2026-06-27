@@ -1,0 +1,17 @@
+# ClusterIP service — for internal cluster access to routing-service pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "freeswitch-dialplan.fullname" . }}-svc
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "freeswitch-dialplan.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "freeswitch-dialplan.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP

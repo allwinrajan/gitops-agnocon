@@ -1,0 +1,91 @@
+# Watchdog — values.yaml
+
+namespace: watchdog
+
+replicaCount: 1
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: watchdog
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: regcred
+
+nameOverride: ""
+fullnameOverride: "watchdog"
+
+service:
+  type: ClusterIP
+  port: 3000
+
+# Consul — exact admin-frontend pattern
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  connectInject: true
+
+  # The name this service is registered under in Consul.
+  serviceName: "watchdog-service"
+
+  # ServiceAccount — MUST match serviceName (Consul webhook enforces this).
+  serviceAccountName: "watchdog-service"
+
+  # Availability zone tag written into Consul service metadata.
+  zone: "ZONE-1"
+
+  # Watchdog port excluded from Envoy transparent proxy.
+  excludeInboundPorts:  "3000"
+  excludeOutboundPorts: "3000"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-watchdog
+
+# dnsPolicy — ClusterFirst ensures CoreDNS resolves consul-server DNS
+dnsPolicy: ClusterFirst
+
+# Init container images — alpine:3.19 has full iproute2 (busybox does NOT)
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+# Application environment
+env:
+  CONSUL_KV_URL:                  "https://consul-server.consul.svc.cluster.local:8501/v1/kv/consul-monitor-service/config?raw"
+  CONSUL_SSL_REJECT_UNAUTHORIZED: "false"
+  CONSUL_SSL_CHECK_HOSTNAME:      "false"
+
+# Sensitive values — stored in a Secret
+secret:
+  CONSUL_TOKEN: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+healthCheck:
+  enabled: true
+  path: /health
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

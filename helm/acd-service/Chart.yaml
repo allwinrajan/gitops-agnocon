@@ -1,0 +1,14 @@
+apiVersion: v2
+name: acd-service
+description: ACD Engine — StatefulSet with Multus and Consul-driven runtime config
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - acd
+  - call-center
+  - nats
+  - worker
+  - consul
+maintainers:
+  - name: Agnocon

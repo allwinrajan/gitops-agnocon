@@ -1,0 +1,211 @@
+# NATS JetStream — Staging TLS Values
+
+namespace: nats
+replicaCount: 2
+
+image:
+  repository: nats
+  tag: "2.10-alpine"
+  pullPolicy: IfNotPresent
+
+# Consul Registration
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  serviceName:        "nats-service"
+  serviceAccountName: "nats-service"
+  zone: "ZONE-1"
+  excludeInboundPorts:  "4222,6222,8080,8222"
+  excludeOutboundPorts: "4222,6222"
+
+# cert-manager TLS
+tls:
+  enabled: true
+  secretName: nats-tls-hv-secret
+  ca:   "ca.crt"
+  cert: "tls.crt"
+  key:  "tls.key"
+  verify: false
+  routeSecretName: nats-route-tls-secret
+  routeCert: "tls.crt"
+  routeKey:  "tls.key"
+  routeCa:   "ca.crt"
+  reloader:
+    enabled: true
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-nats-81-82
+
+# dnsPolicy — ClusterFirst ensures CoreDNS resolves consul-server DNS
+dnsPolicy: ClusterFirst
+
+# Init container images
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+# NATS Core
+nats:
+  ports:
+    client:    4222
+    monitoring: 8222
+    cluster:   6222
+    websocket: 8080
+
+  cluster:
+    name: "nats-cluster"
+    # Cluster Routing Toggle
+    enabled: false
+    # FIXED: use headless DNS names, NOT MacVLAN IPs
+    routes:
+      - "nats-0.nats-headless.nats.svc.cluster.local"
+      - "nats-1.nats-headless.nats.svc.cluster.local"
+
+  jetstream:
+    enabled: true
+    maxMemoryStore: "512Mi"
+    maxFileStore: "10Gi"
+    domain: "nats-cluster"
+
+  websocket:
+    enabled: true
+    port: 8080
+    noTLS: false
+    compression: true
+
+  accounts:
+    system:
+      user: "sys"
+      password: "Admin@123"
+    app:
+      user: "app"
+      password: "Admin@123"
+
+  limits:
+    maxConnections: 65536
+    maxControlLine: 4096
+    maxPayload: 1048576
+    maxPending: 67108864
+    writeDeadline: "10s"
+
+  logging:
+    debug: false
+    trace: false
+    logtime: true
+
+  lameDuck:
+    duration: "30s"
+    gracePeriod: "10s"
+
+natsBox:
+  enabled: false
+  image:
+    repository: natsio/nats-box
+    tag: "0.14.1"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+reloader:
+  image:
+    repository: natsio/nats-server-config-reloader
+    tag: "0.14.2"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+metrics:
+  enabled: false
+  image:
+    repository: natsio/prometheus-nats-exporter
+    tag: "0.15.0"
+    pullPolicy: IfNotPresent
+  port: 7777
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+resources:
+  requests:
+    cpu: 1
+    memory: 1Gi
+  limits:
+    cpu: 2
+    memory: 2Gi
+
+persistence:
+  enabled: true
+  storageClass: "longhorn-nats"
+  size: 10Gi
+  accessMode: ReadWriteOnce
+
+securityContext:
+  fsGroup: 1000
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroupChangePolicy: "OnRootMismatch"
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+service:
+  type: ClusterIP
+  headless:
+    enabled: true
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+              app.kubernetes.io/component: nats
+          topologyKey: kubernetes.io/hostname
+
+healthChecks:
+  startup:
+    enabled: false
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 90
+  liveness:
+    enabled: false
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readiness:
+    enabled: false
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+
+labels: {}
+podAnnotations: {}
+terminationGracePeriodSeconds: 60

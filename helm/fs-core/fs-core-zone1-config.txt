@@ -1,0 +1,26 @@
+# =============================================================================
+# Consul KV — fs-core-v1/zone-1/config
+# =============================================================================
+# Upload:
+#   consul kv put fs-core-v1/zone-1/config @fs-core-zone1-config.txt
+#
+# This single blob drives every runtime config inside the FreeSWITCH pod.
+# Helm values.yaml contains only infrastructure (image, ports, replicas).
+# =============================================================================
+
+# ── Service URLs ──────────────────────────────────────────────────────────────
+ROUTING_SERVICE_URL=http://192.168.9.40:9999/dialplan
+DIRECTORY_SERVICE_URL=http://192.168.9.61:5000/directory
+
+# ── HTTP cache SSL certificate path ───────────────────────────────────────────
+HTTP_CACHE_SSL_CERT=/etc/truststore/certs/admin-backend-service.crt
+
+# ── ACL rules (comma-separated list of  type:cidr  entries) ──────────────────
+# loopback.auto list (default: deny)
+ACL_LOOPBACK_AUTO=allow:127.0.0.1/32,allow:192.168.9.46/32,allow:192.168.9.48/32,allow:192.168.9.47/32,allow:192.168.200.0/24,allow:0.0.0.0/0
+
+# lan list (default: allow)
+ACL_LAN=deny:192.168.42.0/24,allow:192.168.42.42/32
+
+# trusted list (default: allow)
+ACL_TRUSTED=allow:192.168.9.115/32,allow:192.168.9.0/24,allow:192.168.9.46/24,allow:192.168.9.47/32,allow:192.168.9.48/32,allow:192.168.200.0/24,allow:0.0.0.0/0

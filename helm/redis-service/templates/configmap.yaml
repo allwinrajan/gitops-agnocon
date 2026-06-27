@@ -1,0 +1,130 @@
+---
+# ==============================================================================
+# ConfigMap: redis-config
+# Mounted read-only at /etc/redis on primary and replica pods.
+#
+# redis.conf:
+#   - ACL via aclfile (NOT requirepass — combining both causes fatal error)
+#   - masterauth for replication authentication
+#   - notify-keyspace-events set statically here AND via CONFIG SET postStart
+#   - tcp-keepalive 30 for pub/sub ping/pong keepalive
+#   - client-output-buffer-limit pubsub for busy telecom channels
+#   - No replicaof — injected at runtime by replica command args
+#
+# users.acl:
+#   - default user disabled (no anonymous access)
+#   - admin user with full permissions
+#
+# sentinel.conf is in a separate ConfigMap (sentinel-config) below.
+# Sentinel copies it to /tmp/sentinel.conf (writable) at startup because
+# Sentinel rewrites its own config file on every failover event.
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: {{ include "redis.namespace" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+data:
+  redis.conf: |
+    # ── Network ────────────────────────────────────────────────────────────────
+    bind 0.0.0.0
+    port 6379
+    protected-mode no
+    tcp-keepalive {{ .Values.redis.tcpKeepalive }}
+    hz {{ .Values.redis.hz }}
+
+    # ── Auth — requirepass (simple, compatible with all clients) ──────────────
+    # Using requirepass only — no aclfile. This avoids stale ACL data on PVC
+    # overriding the ConfigMap-mounted users.acl.
+    # Clients connect with: AUTH admin Admin@123  OR  AUTH Admin@123
+    # The 'default' user is automatically assigned this password in Redis 7.x.
+    requirepass {{ .Values.auth.password }}
+    masterauth  {{ .Values.auth.password }}
+
+    # ── Persistence ────────────────────────────────────────────────────────────
+    appendonly {{ .Values.redis.appendonly }}
+    appendfsync {{ .Values.redis.appendfsync }}
+    dir /data
+    dbfilename dump.rdb
+
+    # ── Pub/Sub — keyspace notifications ──────────────────────────────────────
+    # Applied here (static) AND via CONFIG SET in postStart hook (runtime).
+    # notify-keyspace-events: $ = String commands flag. Quoted here because the
+    # redis.conf parser accepts quoted values. Loaded by redis-stack-server's
+    # /entrypoint.sh which passes this config via --include flag so all
+    # redis-stack modules (ReJSON, RediSearch) are loaded first, then config applied.
+    notify-keyspace-events "Exg$Klt"
+
+    # ReJSON + RediSearch are loaded automatically by redis-stack-server.
+    # DO NOT add loadmodule here — it causes fatal "Module already loaded" error.
+
+    # Pub/Sub output buffer — hard 64mb, soft 32mb over 60s
+    client-output-buffer-limit pubsub 67108864 33554432 60
+
+    # ── Memory ────────────────────────────────────────────────────────────────
+    maxmemory {{ .Values.redis.maxmemory }}
+    maxmemory-policy {{ .Values.redis.maxmemoryPolicy }}
+
+    # ── Replication ───────────────────────────────────────────────────────────
+    # replicaof is NOT set here — injected by replica container command args.
+    # replica-announce-hostname is NOT set here — Sentinel uses FQDN resolution
+    # via resolve-hostnames + announce-hostnames in sentinel.conf instead.
+    replica-read-only yes
+    replica-lazy-flush yes
+    lazyfree-lazy-eviction yes
+    replica-serve-stale-data yes
+
+    {{- if .Values.redis.extraConfig }}
+    # ── Extra config ──────────────────────────────────────────────────────────
+    {{ .Values.redis.extraConfig | nindent 4 }}
+    {{- end }}
+
+
+---
+# ==============================================================================
+# ConfigMap: sentinel-config
+# Mounted read-only at /etc/sentinel-readonly on sentinel pods.
+# Sentinel copies it to writable /tmp/sentinel.conf at startup.
+#
+# Key settings for clean failover:
+#   resolve-hostnames yes   — Sentinel resolves FQDNs to IPs internally
+#   announce-hostnames yes  — Sentinel broadcasts FQDNs (not IPs) to peers
+#                             so after failover replicas reconnect by FQDN
+#                             (works with headless DNS, survives pod restarts)
+#   auth-user + auth-pass   — matches the ACL user created in users.acl
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  namespace: {{ include "redis.namespace" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+data:
+  sentinel.conf: |
+    port {{ .Values.sentinel.port }}
+    protected-mode no
+
+    # ── Monitor primary via headless FQDN ─────────────────────────────────────
+    # Sentinel resolves this FQDN to an IP internally. After failover Sentinel
+    # updates this entry to the new master's FQDN (via announce-hostnames).
+    sentinel monitor {{ .Values.sentinel.masterName }} {{ include "redis.primaryFQDN" . }} 6379 {{ .Values.sentinel.quorum }}
+
+    # ── Auth — must match ACL user in users.acl ───────────────────────────────
+    sentinel auth-pass {{ .Values.sentinel.masterName }} {{ .Values.auth.password }}
+
+    # ── Timing ────────────────────────────────────────────────────────────────
+    sentinel down-after-milliseconds {{ .Values.sentinel.masterName }} {{ .Values.sentinel.downAfterMs }}
+    sentinel failover-timeout        {{ .Values.sentinel.masterName }} {{ .Values.sentinel.failoverTimeout }}
+    sentinel parallel-syncs          {{ .Values.sentinel.masterName }} {{ .Values.sentinel.parallelSyncs }}
+
+    # ── FQDN-based failover (critical for Kubernetes) ─────────────────────────
+    # resolve-hostnames: Sentinel resolves DNS names, not just IPs.
+    # announce-hostnames: Sentinel tells peers about nodes using FQDNs.
+    # Together these ensure: after failover, the new master's FQDN is broadcast
+    # so all replicas and clients can reconnect by DNS (pod IPs change on restart,
+    # FQDNs via headless service are stable).
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes

@@ -1,0 +1,99 @@
+# Workspace Service — values-staging.yaml
+
+namespace: admin-app
+
+replicaCount: 1
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: workspace-service-staging-v1.1.0
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: regcred
+
+nameOverride: ""
+fullnameOverride: "workspace-service"
+
+service:
+  type: ClusterIP
+  port: 5000
+
+# Consul — Consul Connect inject (Envoy sidecar)
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  # The name this service is registered under in Consul.
+  serviceName: "workspace-service"
+
+  # ServiceAccount — MUST match connectService (Consul webhook enforces this).
+  serviceAccountName: "workspace-service"
+
+  # Availability zone tag written into Consul service metadata.
+  zone: "ZONE-1"
+
+  # Port excluded from Envoy transparent proxy.
+  excludeInboundPorts:  "5000"
+  excludeOutboundPorts: "5000"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-workspace-service
+
+# dnsPolicy — ClusterFirst ensures CoreDNS resolves consul-server DNS
+dnsPolicy: ClusterFirst
+
+# Init container images
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+# TLS — nginx SSL certificate
+tls:
+  enabled: true
+  secretName: "workspace-tls-hv-secret"
+
+# Consul KV — single blob key
+consulKV:
+  key: "workspace-service/config"
+
+probes:
+  enabled: false
+  liveness:
+    httpGet:
+      path: /health
+      port: 5000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  readiness:
+    httpGet:
+      path: /health
+      port: 5000
+    initialDelaySeconds: 15
+    periodSeconds: 5
+
+resources:
+  requests:
+    cpu: "300m"
+    memory: "512Mi"
+  limits:
+    cpu: "800m"
+    memory: "1Gi"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "5000"
+  prometheus.io/path: "/metrics"
+
+labels:
+  app: workspace-service
+  version: "1.0.0"
+  environment: staging

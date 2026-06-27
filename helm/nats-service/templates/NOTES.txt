@@ -1,0 +1,29 @@
+NATS JetStream deployed successfully!
+
+Release : {{ .Release.Name }}
+Namespace: {{ .Values.namespace }}
+Replicas : {{ .Values.replicaCount }}
+TLS      : {{ .Values.tls.enabled }}
+JetStream: {{ .Values.nats.jetstream.enabled }}
+
+{{- if .Values.tls.enabled }}
+
+Connect (TLS):
+  nats-box: nats sub -s tls://app:Admin@123@nats:4222 test
+  External: nats sub -s tls://app:Admin@123@<macvlan-ip>:4222 --tlsca /path/to/ca.crt test
+
+Verify TLS cert SANs:
+  openssl s_client -connect <macvlan-ip>:4222 -showcerts
+{{- else }}
+
+Connect (plain):
+  kubectl exec -it deploy/nats-box -n {{ .Values.namespace }} -- nats sub -s nats://app:changeme@nats:4222 test
+{{- end }}
+
+Monitor:
+  kubectl port-forward svc/nats 8222:8222 -n {{ .Values.namespace }}
+  # then: http://localhost:8222/healthz
+
+Logs:
+  kubectl logs -l app.kubernetes.io/name=nats -c nats -n {{ .Values.namespace }}
+  kubectl exec -it nats-0 -n {{ .Values.namespace }} -c nats -- tail -f /var/log/nats/nats.log

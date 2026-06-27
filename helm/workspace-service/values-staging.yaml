@@ -1,0 +1,8 @@
+# workspace-service — staging overlay
+# Merged on top of values.yaml:  helm -f values.yaml -f values-staging.yaml
+
+image:
+  tag: "workspace-service-staging-v1.1.0"
+
+consul:
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"

@@ -1,0 +1,12 @@
+Telegraf deployed successfully.
+
+  Service (Consul) : {{ .Values.consul.serviceName }}
+  Namespace        : {{ .Values.namespace }}
+  Config           : {{ include "telegraf-service.fullname" . }}-config (telegraf.conf)
+{{- if .Values.multus.enabled }}
+  Multus NAD       : {{ .Values.multus.networkAttachmentDefinition }} (net1)
+{{- end }}
+
+Check status:
+  kubectl -n {{ .Values.namespace }} get pods -l app.kubernetes.io/name=telegraf-service
+  kubectl -n {{ .Values.namespace }} logs deploy/{{ include "telegraf-service.fullname" . }} -c telegraf

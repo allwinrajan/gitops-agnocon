@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "admin-app-api.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "admin-app-api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "admin-app-api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "admin-app-api.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+
+        {{- if .Values.consul.enabled }}
+        # Consul Connect sidecar injection — Envoy handles health checks over
+        # eth0 (pod network). Works on any node regardless of MacVLAN topology.
+        # transparent-proxy disabled so port 5001 (API) bypasses Envoy entirely.
+        # Works for Deployment (random pod names) — Consul Connect uses the
+        # ServiceAccount identity for registration, not the pod name.
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        # Placeholder annotations — consul-tag-patcher overwrites these with
+        # the live Multus IP before Consul Connect reads them.
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:        "admin-api"
+        {{- end }}
+
+    spec:
+      terminationGracePeriodSeconds: 15
+
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+
+      dnsPolicy: {{ .Values.dnsPolicy | default "ClusterFirst" }}
+      {{- if eq (.Values.dnsPolicy | default "ClusterFirst") "None" }}
+      dnsConfig:
+        {{- toYaml .Values.dnsConfig | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      initContainers:
+        # Step 1 — fix routing:
+        #   a) Route cluster CIDRs via eth0 so consul-connect-inject-init and
+        #      the Envoy sidecar can reach consul-server and the K8s API.
+        #   b) Policy routing table 100 so eth0-sourced packets reply via eth0
+        #      — prevents asymmetric routing that causes Envoy readiness probe
+        #      i/o timeout and leaves pods stuck at 1/2.
+        #   c) Policy routing table 200 preserved for LAN → MacVLAN (net1) so
+        #      LAN clients can still reach admin API on the MacVLAN IP.
+        {{- include "admin.fixRouting" . | nindent 8 }}
+
+        # Step 2 — patch pod annotations with the live Multus (MacVLAN) IP.
+        # Consul Connect reads these when registering the service so service-meta
+        # shows the correct MacVLAN address.
+        {{- if .Values.consul.enabled }}
+        {{- include "admin.consulTagPatcher" (dict "nadName" .Values.multus.networkAttachmentDefinition "port" (toString .Values.service.port) "ctx" .) | nindent 8 }}
+        {{- end }}
+
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "/app/startup.sh"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+            - name: CONSUL_ZONE
+              value: {{ .Values.consul.zone | quote }}
+            - name: MULTUS_NAD
+              value: {{ .Values.multus.networkAttachmentDefinition | quote }}
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.enabled }}
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/startup.sh
+              subPath: startup.sh
+            {{- if and .Values.tls .Values.tls.enabled }}
+            - name: tls-secret
+              mountPath: {{ .Values.tls.mountPath }}
+              readOnly: true
+            {{- end }}
+
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "admin-app-api.fullname" . }}-config
+            defaultMode: 0755
+        {{- if and .Values.tls .Values.tls.enabled }}
+        - name: tls-secret
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

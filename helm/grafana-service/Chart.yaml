@@ -1,0 +1,13 @@
+apiVersion: v2
+name: grafana-service
+description: Realtime Grafana — Deployment with Multus, Consul Connect sidecar injection
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - grafana
+  - realtime
+  - consul
+  - multus
+maintainers:
+  - name: Agnocon

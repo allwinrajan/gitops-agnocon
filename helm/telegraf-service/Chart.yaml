@@ -1,0 +1,17 @@
+apiVersion: v2
+name: telegraf-service
+description: >
+  Telegraf metrics agent — collects system metrics and NATS IVR events,
+  writes to PostgreSQL/TimescaleDB. Stateless Deployment.
+  Consul Connect-inject (Envoy sidecar); optional Multus MacVLAN net1.
+type: application
+version: 1.0.0
+appVersion: "1.30"
+keywords:
+  - telegraf
+  - metrics
+  - nats
+  - timescaledb
+  - consul
+maintainers:
+  - name: Agnocon

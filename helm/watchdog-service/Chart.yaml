@@ -1,0 +1,13 @@
+apiVersion: v2
+name: watchdog-service
+description: Consul Monitor Service — watches Consul events and publishes to NATS subjects
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - consul
+  - nats
+  - watchdog
+  - monitor
+maintainers:
+  - name: Agnocon Team

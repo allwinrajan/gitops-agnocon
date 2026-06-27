@@ -1,0 +1,8 @@
+# postgres-service — production overlay
+# Merged on top of values.yaml:  helm -f values.yaml -f values-production.yaml
+
+image:
+  tag: "2.17.0-pg17"
+
+consul:
+  token: "PROD-CONSUL-TOKEN-REPLACE-ME"

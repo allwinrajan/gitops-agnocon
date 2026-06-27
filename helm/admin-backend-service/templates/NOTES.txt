@@ -1,0 +1,23 @@
+admin-app-api deployed successfully!
+
+Service registered in Consul as: admin-backend-service
+Consul KV prefix: admin-backend/
+
+Ensure all keys exist in Consul KV before deploying:
+  port, host, base_url, app_frontend_base_url,
+  jwt_expiration, jwt_secret, session_secret, crypto_secret_key,
+  email_service_email_id, email_service_api_key,
+  forgot_password_expiry_minutes, user_invite_expiry_days,
+  google_client_id, google_client_secret, google_redirect_uri,
+  database_host, database_port, database_name, database_user,
+  database_password, database_url,
+  minio_endpoint, minio_port, minio_access_key, minio_secret_key, minio_use_ssl,
+  opensearch_node, opensearch_username, opensearch_password,
+  opensearch_ssl_reject_unauthorized, opensearch_ssl_check_hostname,
+  nats_servers, nats_user, nats_password, nats_stream,
+  nats_pub_subject, nats_sub_subject, nats_ssl_reject_unauthorized,
+  grafana_url, grafana_username, grafana_password,
+  aes_endpoint, aes_switch_name, aes_username, aes_password,
+  aes_reconnect_interval, aes_ping_interval,
+  aes_ssl_reject_unauthorized, aes_ssl_check_hostname, trust_store_path,
+  cors_origin, log_level, graphql_introspection

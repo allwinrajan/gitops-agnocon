@@ -1,0 +1,95 @@
+{{- if .Values.consul.enabled }}
+---
+# pre-install / pre-upgrade Job — purges stale Consul registrations.
+# Deployment pods have random names so IDs can't be predicted.
+# This job deregisters ALL existing instances before new pods come up.
+# Safe because the new pod will re-register immediately via init container.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: telegraf-consul-cleanup
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "telegraf-service.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  ttlSecondsAfterFinished: 120
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: consul-cleanup
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+            - name: CONSUL_SERVICE_NAME
+              value: {{ .Values.consul.serviceName | quote }}
+            - name: CONSUL_AGENT_IPS
+              value: {{ .Values.consul.agentPodIPs | join "," | quote }}
+          command:
+            - python3
+            - -u
+            - -c
+            - |
+              import json, os, ssl, sys, urllib.request, urllib.error
+
+              def log(msg): print(f"[consul-cleanup] {msg}", flush=True)
+
+              consul_url   = os.environ["CONSUL_URL"]
+              consul_token = os.environ["CONSUL_TOKEN"]
+              svc_name     = os.environ["CONSUL_SERVICE_NAME"]
+              agent_ips    = [ip.strip() for ip in os.environ.get("CONSUL_AGENT_IPS","").split(",") if ip.strip()]
+
+              ssl_ctx = ssl.create_default_context()
+              ssl_ctx.check_hostname = False
+              ssl_ctx.verify_mode    = ssl.CERT_NONE
+
+              def consul_get(path):
+                  url = f"{consul_url}{path}"
+                  req = urllib.request.Request(url, headers={"X-Consul-Token": consul_token})
+                  with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                      return json.loads(r.read())
+
+              def deregister_from_agent(agent_ip, svc_id):
+                  url = f"https://{agent_ip}:8501/v1/agent/service/deregister/{svc_id}"
+                  req = urllib.request.Request(url, method="PUT",
+                      headers={"X-Consul-Token": consul_token})
+                  try:
+                      with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as r:
+                          return r.status
+                  except urllib.error.HTTPError as e:
+                      return e.code
+
+              try:
+                  instances = consul_get(f"/v1/catalog/service/{svc_name}")
+              except Exception as e:
+                  log(f"Could not list instances (first install?): {e}")
+                  sys.exit(0)
+
+              if not instances:
+                  log("No existing instances found — nothing to clean up")
+                  sys.exit(0)
+
+              log(f"Found {len(instances)} existing instance(s) for {svc_name}")
+
+              # Deployment pods have random names — deregister ALL existing instances.
+              # The new pod will re-register immediately via init container.
+              for inst in instances:
+                  sid = inst.get("ServiceID", "")
+                  log(f"Deregistering: {sid}")
+                  for agent_ip in agent_ips:
+                      status = deregister_from_agent(agent_ip, sid)
+                      if status in (200, 404):
+                          log(f"  -> deregistered from {agent_ip} (HTTP {status})")
+                          break
+                      log(f"  -> HTTP {status} from {agent_ip}")
+
+              log("Cleanup complete")
+{{- end }}

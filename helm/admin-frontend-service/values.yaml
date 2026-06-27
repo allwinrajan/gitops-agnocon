@@ -1,0 +1,72 @@
+# Admin App UI — values-staging.yaml
+
+namespace: admin-app
+
+replicaCount: 1
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: admin-frontend-service-staging-v1.0.0
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: regcred
+
+nameOverride: ""
+fullnameOverride: "admin-frontend-service"
+
+service:
+  type: ClusterIP
+  port: 4000
+
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  connectInject: true
+
+  serviceName: "admin-frontend-service"
+  serviceAccountName: "admin-frontend-service"
+  zone: "ZONE-1"
+
+  excludeInboundPorts:  "4000"
+  excludeOutboundPorts: "4000"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-frontend-service
+dnsPolicy: ClusterFirst
+
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+probes:
+  enabled: false
+  liveness:
+    httpGet:
+      path: /health
+      port: 4000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  readiness:
+    httpGet:
+      path: /health
+      port: 4000
+    initialDelaySeconds: 15
+    periodSeconds: 5
+
+resources:
+  requests:
+    cpu: "300m"
+    memory: "512Mi"
+  limits:
+    cpu: "800m"
+    memory: "1Gi"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

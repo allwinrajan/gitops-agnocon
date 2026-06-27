@@ -1,0 +1,187 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "rustfs.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rustfs.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "rustfs.fullname" . }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "rustfs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rustfs.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+        {{- if .Values.consul.serviceName }}
+        # Consul Connect sidecar injection — Envoy handles health checks over
+        # eth0 (pod network). Works on any node regardless of MacVLAN topology.
+        # transparent-proxy disabled so RustFS ports (9000, 9001) bypass Envoy
+        # entirely. Envoy only listens on port 20000 for kubelet probes.
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        # Placeholder annotations — consul-tag-patcher overwrites these with
+        # the live Multus IP before Consul Connect reads them.
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.consul.serviceName }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+
+      dnsPolicy: {{ .Values.dnsPolicy | default "ClusterFirst" }}
+      {{- if eq (.Values.dnsPolicy | default "ClusterFirst") "None" }}
+      dnsConfig:
+        {{- toYaml .Values.dnsConfig | nindent 8 }}
+      {{- end }}
+
+      initContainers:
+        # Step 1 — fix routing:
+        #   a) Route cluster CIDRs via eth0 so consul-connect-inject-init and
+        #      the Envoy sidecar can reach consul-server and the K8s API.
+        #   b) Policy routing table 100 so eth0-sourced packets reply via eth0
+        #      — prevents asymmetric routing that causes Envoy readiness probe
+        #      i/o timeout and leaves pods stuck at 1/2.
+        {{- include "rustfs.fixRouting" . | nindent 8 }}
+
+        # Step 2 — patch pod annotations with the live Multus (MacVLAN) IP.
+        # Consul Connect reads these when registering the service so service-meta
+        # shows the correct MacVLAN address for routing lookups.
+        {{- if .Values.consul.serviceName }}
+        {{- include "rustfs.consulTagPatcher" (dict "networkName" .Values.multus.networkAttachmentDefinition "port" (toString .Values.rustfs.apiPort) "ctx" .) | nindent 8 }}
+        {{- end }}
+
+        # Step 3 — wait for Multus interface to be fully up before app starts
+        {{- if .Values.multus.enabled }}
+        - name: wait-for-network
+          image: {{ .Values.initContainers.waitForNetwork.image }}
+          imagePullPolicy: {{ .Values.initContainers.waitForNetwork.imagePullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              for i in $(seq 1 {{ .Values.initContainers.waitForNetwork.waitTimeout }}); do
+                if ip addr show | grep -E "net1|eth1"; then
+                  echo "[wait-for-network] Multus interface found"; ip addr show; exit 0
+                fi
+                echo "[wait-for-network] Attempt $i..."; sleep {{ .Values.initContainers.waitForNetwork.checkInterval }}
+              done
+              exit 0
+        {{- end }}
+
+      containers:
+        - name: rustfs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --address
+            - ":9000"
+            - --console-address
+            - ":9001"
+            - --console-enable
+            - /data
+          ports:
+            - name: api
+              containerPort: 9000
+              protocol: TCP
+            - name: console
+              containerPort: 9001
+              protocol: TCP
+          env:
+            - name: RUSTFS_VOLUMES
+              value: "/data"
+            - name: RUSTFS_ADDRESS
+              value: "0.0.0.0:9000"
+            - name: RUSTFS_CONSOLE_ADDRESS
+              value: "0.0.0.0:9001"
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "true"
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rustfs.fullname" . }}-secret
+                  key: rootUser
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rustfs.fullname" . }}-secret
+                  key: rootPassword
+            - name: RUSTFS_OBS_LOGGER_LEVEL
+              value: "info"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+  # Dynamic provisioning — Longhorn creates PV automatically when the pod
+  # is scheduled. No manual PV or PVC needed outside this template.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - {{ .Values.storage.accessMode }}
+        storageClassName: {{ .Values.storage.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

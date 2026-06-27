@@ -1,0 +1,295 @@
+---
+# ==============================================================================
+# ConfigMap: mysql-cluster-config
+# base.cnf  — safe for --initialize (no GR plugin directives)
+# gr.cnf    — GR plugin config, enabled AFTER --initialize completes
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mysql.name" . }}-config
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+data:
+  # base.cnf — loaded during --initialize (no GR plugin here — crashes init)
+  base.cnf: |
+    [mysqld]
+    bind-address                     = 0.0.0.0
+    port                             = 3306
+    skip_name_resolve                = ON
+    character-set-server             = utf8mb4
+    collation-server                 = utf8mb4_unicode_ci
+    default_authentication_plugin    = mysql_native_password
+    max_connections                  = {{ .Values.mysqlConfig.maxConnections }}
+    innodb_buffer_pool_size          = {{ .Values.mysqlConfig.innodbBufferPoolSize }}
+    log_bin                          = mysql-bin
+    binlog_format                    = ROW
+    binlog_checksum                  = NONE
+    gtid_mode                        = ON
+    enforce_gtid_consistency         = ON
+    log_replica_updates              = ON
+    relay_log_recovery               = ON
+    replica_preserve_commit_order    = ON
+    transaction_write_set_extraction = XXHASH64
+    [client]
+    default-character-set = utf8mb4
+    [mysql]
+    default-character-set = utf8mb4
+
+  # gr.cnf.disabled — renamed to gr.cnf AFTER --initialize completes
+  gr.cnf.disabled: |
+    [mysqld]
+    plugin_load_add                                    = group_replication.so
+    group_replication_group_name                       = {{ .Values.groupReplication.groupName | quote }}
+    group_replication_single_primary_mode              = ON
+    group_replication_enforce_update_everywhere_checks = OFF
+    group_replication_start_on_boot                    = OFF
+    group_replication_bootstrap_group                  = OFF
+    group_replication_member_expel_timeout             = 5
+    group_replication_autorejoin_tries                 = 3
+
+---
+# ==============================================================================
+# ConfigMap: mysql-cluster-scripts
+# entrypoint.sh — initialises data dir, enables GR config, starts mysqld,
+#                 then calls bootstrap.sh
+# bootstrap.sh  — handles GR join/bootstrap for primary and secondaries.
+#                 Auto-failover: GR elects new primary automatically when the
+#                 current primary disappears (majority vote: 2 of 3 members).
+#                 On pod restart, bootstrap.sh detects existing group and
+#                 rejoins without re-bootstrapping.
+# liveness.sh   — checks MEMBER_STATE = ONLINE
+# readiness.sh  — checks mysqladmin ping
+# ==============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mysql.name" . }}-scripts
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+data:
+  entrypoint.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    SERVER_ID="${SERVER_ID:-1}"
+    HEADLESS="{{ include "mysql.headlessSvc" . }}.{{ include "mysql.namespace" . }}.svc.cluster.local"
+    CONF_RO="/mnt/mysql-config"
+    CONF_DIR="/etc/mysql/conf.d"
+    DATA_DIR="/var/lib/mysql"
+    SOCK="/var/run/mysqld/mysqld.sock"
+
+    mkdir -p /var/run/mysqld
+    chown mysql:mysql /var/run/mysqld 2>/dev/null || true
+
+    # Step 1: Copy base config into writable emptyDir conf.d
+    echo "[entrypoint] Copying base.cnf..."
+    cp "${CONF_RO}/base.cnf" "${CONF_DIR}/base.cnf"
+    # gr.cnf NOT copied yet — must be absent during --initialize
+
+    # Step 2: Initialize if fresh PVC
+    if [ ! -f "${DATA_DIR}/ibdata1" ]; then
+      echo "[entrypoint] Fresh PVC — running --initialize-insecure..."
+      mysqld --user=mysql --initialize-insecure --datadir="${DATA_DIR}" 2>&1 | tail -5 || true
+
+      echo "[entrypoint] Waiting for ibdata1..."
+      for i in $(seq 1 30); do
+        [ -f "${DATA_DIR}/ibdata1" ] && echo "[entrypoint] Data dir ready." && break
+        echo "  wait ${i}/30..."; sleep 2
+      done
+
+      echo "[entrypoint] Setting root password via temp instance..."
+      mysqld --user=mysql --datadir="${DATA_DIR}" \
+        --skip-networking --socket=/tmp/init.sock --daemonize 2>/dev/null || true
+      for i in $(seq 1 30); do
+        mysqladmin --socket=/tmp/init.sock ping --silent 2>/dev/null && break
+        sleep 1
+      done
+      mysql --socket=/tmp/init.sock -uroot --skip-password \
+        -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}'; FLUSH PRIVILEGES;" \
+        2>/dev/null || true
+      mysqladmin --socket=/tmp/init.sock -uroot -p"${MYSQL_ROOT_PASSWORD}" shutdown \
+        2>/dev/null || true
+      sleep 2
+      echo "[entrypoint] Init done."
+    fi
+
+    # Step 3: Enable GR config after init
+    echo "[entrypoint] Enabling GR config..."
+    cp "${CONF_RO}/gr.cnf.disabled" "${CONF_DIR}/gr.cnf"
+
+    # Step 4: Start mysqld
+    echo "[entrypoint] Starting mysqld server-id=${SERVER_ID}..."
+    mysqld \
+      --user=mysql \
+      --server-id="${SERVER_ID}" \
+      "--report-host=${HOSTNAME}.${HEADLESS}" \
+      --socket="${SOCK}" \
+      --pid-file=/var/run/mysqld/mysqld.pid &
+    MYSQL_PID=$!
+
+    # Step 5: Wait for mysqld to accept connections
+    echo "[entrypoint] Waiting for mysqld..."
+    for i in $(seq 1 60); do
+      mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+        --socket="${SOCK}" --silent 2>/dev/null && \
+        echo "[entrypoint] mysqld ready." && break
+      echo "[entrypoint] attempt ${i}/60..."; sleep 3
+    done
+
+    # Step 6: Bootstrap GR membership
+    echo "[entrypoint] Running bootstrap..."
+    bash /scripts/bootstrap.sh
+
+    echo "[entrypoint] Done. Waiting on mysqld..."
+    wait "${MYSQL_PID}"
+
+  bootstrap.sh: |
+    #!/bin/bash
+    set -uo pipefail
+
+    RELEASE="{{ include "mysql.name" . }}"
+    NS="{{ include "mysql.namespace" . }}"
+    SVC="{{ include "mysql.headlessSvc" . }}"
+    GR_PORT="{{ .Values.groupReplication.groupPort }}"
+    GR_GROUP="{{ .Values.groupReplication.groupName }}"
+    GR_SEEDS="{{ include "mysql.grSeeds" . }}"
+    ROOT_PASS="${MYSQL_ROOT_PASSWORD}"
+    REPL_PASS="${MYSQL_REPLICATION_PASSWORD}"
+    REPL_USER="replicator"
+    POD="${HOSTNAME}"
+    MY_FQDN="${POD}.${SVC}.${NS}.svc.cluster.local"
+    PRIMARY_POD="${RELEASE}-primary-0"
+    PRIMARY_FQDN="${PRIMARY_POD}.${SVC}.${NS}.svc.cluster.local"
+    SOCK="/var/run/mysqld/mysqld.sock"
+
+    sql() { mysql -uroot -p"${ROOT_PASS}" --socket="${SOCK}" --connect-timeout=10 -e "$1" 2>&1; }
+
+    member_state() {
+      mysql -uroot -p"${ROOT_PASS}" --socket="${SOCK}" -N --connect-timeout=5 \
+        -e "SELECT MEMBER_STATE FROM performance_schema.replication_group_members
+            WHERE MEMBER_HOST='${MY_FQDN}' LIMIT 1;" 2>/dev/null || echo ""
+    }
+
+    group_size() {
+      mysql -uroot -p"${ROOT_PASS}" --socket="${SOCK}" -N --connect-timeout=5 \
+        -e "SELECT COUNT(*) FROM performance_schema.replication_group_members
+            WHERE MEMBER_STATE='ONLINE';" 2>/dev/null || echo "0"
+    }
+
+    echo "[bootstrap] pod=${POD} fqdn=${MY_FQDN}"
+
+    # ── Configure GR addresses ──────────────────────────────────────────────
+    echo "[bootstrap] Configuring GR addresses..."
+    sql "SET PERSIST group_replication_group_name    = '${GR_GROUP}';
+         SET PERSIST group_replication_local_address = '${MY_FQDN}:${GR_PORT}';
+         SET PERSIST group_replication_group_seeds   = '${GR_SEEDS}';" \
+      || echo "[bootstrap] WARN: GR address config"
+
+    # ── Set up replication user ─────────────────────────────────────────────
+    echo "[bootstrap] Setting up replication user..."
+    sql "SET SQL_LOG_BIN = 0;
+         CREATE USER IF NOT EXISTS '${REPL_USER}'@'%'
+           IDENTIFIED WITH mysql_native_password BY '${REPL_PASS}';
+         GRANT REPLICATION SLAVE, BACKUP_ADMIN ON *.* TO '${REPL_USER}'@'%';
+         GRANT GROUP_REPLICATION_STREAM ON *.* TO '${REPL_USER}'@'%';
+         FLUSH PRIVILEGES;
+         SET SQL_LOG_BIN = 1;
+         CHANGE REPLICATION SOURCE TO
+           SOURCE_USER='${REPL_USER}', SOURCE_PASSWORD='${REPL_PASS}'
+           FOR CHANNEL 'group_replication_recovery';" \
+      || echo "[bootstrap] WARN: repl user setup"
+
+    # ── Check current membership state ─────────────────────────────────────
+    STATE=$(member_state)
+    echo "[bootstrap] Current MEMBER_STATE=${STATE}"
+    [ "${STATE}" = "ONLINE" ] && echo "[bootstrap] Already ONLINE — nothing to do." && exit 0
+
+    # ── PRIMARY POD ─────────────────────────────────────────────────────────
+    if [ "${POD}" = "${PRIMARY_POD}" ]; then
+      echo "[bootstrap] This is the PRIMARY pod."
+
+      # Check if a group already exists (other members are ONLINE).
+      # This handles the case where primary pod restarts AFTER failover —
+      # one of the secondaries is now the GR primary. We must JOIN, not bootstrap.
+      ONLINE=$(group_size)
+      echo "[bootstrap] Online members visible: ${ONLINE}"
+
+      if [ "${ONLINE}" -gt "0" ] 2>/dev/null; then
+        echo "[bootstrap] Group already running (${ONLINE} ONLINE) — joining as member..."
+        sql "START GROUP_REPLICATION USER='${REPL_USER}', PASSWORD='${REPL_PASS}';" \
+          || echo "[bootstrap] WARN: GR start (join)"
+      else
+        echo "[bootstrap] No group found — bootstrapping new group..."
+        sql "SET GLOBAL group_replication_bootstrap_group = ON;" || true
+        sql "START GROUP_REPLICATION USER='${REPL_USER}', PASSWORD='${REPL_PASS}';" || true
+        sql "SET GLOBAL group_replication_bootstrap_group = OFF;" || true
+      fi
+
+      # Wait for ONLINE
+      for i in $(seq 1 30); do
+        STATE=$(member_state)
+        [ "${STATE}" = "ONLINE" ] && echo "[bootstrap] PRIMARY ONLINE." && break
+        echo "[bootstrap] state=${STATE} attempt ${i}/30..."; sleep 3
+      done
+
+      # Grant root remote access (only if this is truly a fresh bootstrap)
+      ONLINE=$(group_size)
+      if [ "${ONLINE}" = "1" ] 2>/dev/null; then
+        echo "[bootstrap] Fresh group — creating root@% and app users..."
+        sql "DROP USER IF EXISTS 'root'@'%';" || true
+        sql "CREATE USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY '${ROOT_PASS}';
+             GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+             FLUSH PRIVILEGES;
+             FLUSH HOSTS;" \
+          || echo "[bootstrap] WARN: root@% grant"
+
+        {{- range .Values.users }}
+        sql "SET SQL_LOG_BIN = 0;
+             CREATE USER IF NOT EXISTS '{{ .name }}'@'%'
+               IDENTIFIED WITH mysql_native_password BY '{{ .password }}';
+             GRANT ALL PRIVILEGES ON *.* TO '{{ .name }}'@'%' WITH GRANT OPTION;
+             FLUSH PRIVILEGES; SET SQL_LOG_BIN = 1;" \
+          || echo "[bootstrap] WARN: user {{ .name }}"
+        {{- end }}
+      fi
+
+    # ── SECONDARY POD ───────────────────────────────────────────────────────
+    else
+      echo "[bootstrap] This is a SECONDARY pod — waiting for primary to be reachable..."
+      for i in $(seq 1 40); do
+        mysql -uroot -p"${ROOT_PASS}" -h"${PRIMARY_FQDN}" --connect-timeout=5 \
+          -e "SELECT 1;" &>/dev/null && echo "[bootstrap] Primary reachable." && break
+        echo "[bootstrap] attempt ${i}/40..."; sleep 5
+      done
+
+      echo "[bootstrap] Joining group replication..."
+      sql "START GROUP_REPLICATION USER='${REPL_USER}', PASSWORD='${REPL_PASS}';" \
+        || echo "[bootstrap] WARN: GR start (secondary)"
+
+      # Wait for ONLINE
+      for i in $(seq 1 30); do
+        STATE=$(member_state)
+        [ "${STATE}" = "ONLINE" ] && echo "[bootstrap] SECONDARY ONLINE." && break
+        echo "[bootstrap] state=${STATE} attempt ${i}/30..."; sleep 3
+      done
+    fi
+
+    FINAL=$(member_state)
+    echo "[bootstrap] Final MEMBER_STATE=${FINAL}"
+    exit 0
+
+  liveness.sh: |
+    #!/bin/bash
+    STATE=$(mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" --socket=/var/run/mysqld/mysqld.sock \
+      -N --connect-timeout=5 \
+      -e "SELECT MEMBER_STATE FROM performance_schema.replication_group_members
+          WHERE MEMBER_ID = @@server_uuid;" 2>/dev/null)
+    [[ "${STATE}" == "ONLINE" ]] && exit 0 || exit 1
+
+  readiness.sh: |
+    #!/bin/bash
+    mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+      --socket=/var/run/mysqld/mysqld.sock --silent 2>/dev/null

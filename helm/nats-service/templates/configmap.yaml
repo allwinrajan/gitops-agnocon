@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  nats.conf: |
+    host: "0.0.0.0"
+    port: {{ .Values.nats.ports.client }}
+    http_port: {{ .Values.nats.ports.monitoring }}
+
+    server_name: $SERVER_NAME
+
+    pid_file: "/var/run/nats/nats.pid"
+
+    lame_duck_duration: {{ .Values.nats.lameDuck.duration | quote }}
+    lame_duck_grace_period: {{ .Values.nats.lameDuck.gracePeriod | quote }}
+
+    {{- if .Values.tls.enabled }}
+    # TLS — Client Connections (port {{ .Values.nats.ports.client }})
+    tls {
+      cert_file: "/etc/nats/tls/{{ .Values.tls.cert }}"
+      key_file:  "/etc/nats/tls/{{ .Values.tls.key }}"
+      ca_file:   "/etc/nats/tls/{{ .Values.tls.ca }}"
+      verify: {{ .Values.tls.verify }}
+      timeout: 5
+    }
+    {{- end }}
+
+    {{- if .Values.nats.websocket.enabled }}
+    # WebSocket (port {{ .Values.nats.websocket.port }})
+    websocket {
+      port: {{ .Values.nats.websocket.port }}
+      {{- if and .Values.tls.enabled (not .Values.nats.websocket.noTLS) }}
+      tls {
+        cert_file: "/etc/nats/tls/{{ .Values.tls.cert }}"
+        key_file:  "/etc/nats/tls/{{ .Values.tls.key }}"
+        ca_file:   "/etc/nats/tls/{{ .Values.tls.ca }}"
+      }
+      {{- else }}
+      no_tls: {{ .Values.nats.websocket.noTLS }}
+      {{- end }}
+      {{- if .Values.nats.websocket.compression }}
+      compression: true
+      {{- end }}
+    }
+    {{- end }}
+
+    {{- if .Values.nats.cluster.enabled }}
+    cluster {
+      name: {{ .Values.nats.cluster.name | quote }}
+
+      # ── IMPORTANT ──────────────────────────────────────────────────────────
+      # listen on 0.0.0.0 so the cluster port binds on ALL interfaces
+      # (both eth0 pod-network and net1 MacVLAN).
+      # advertise is NOT set here — CLUSTER_ADVERTISE env var handles it via
+      # the headless DNS FQDN, which resolves to the pod's eth0 IP.
+      # Routes below use the same headless DNS FQDNs so peers resolve correctly.
+      # ─────────────────────────────────────────────────────────────────────
+      host: "0.0.0.0"
+      port: {{ .Values.nats.ports.cluster }}
+
+      {{- if .Values.tls.enabled }}
+      # TLS — Cluster Routing (port {{ .Values.nats.ports.cluster }})
+      tls {
+        cert_file: "/etc/nats/route-tls/{{ .Values.tls.routeCert }}"
+        key_file:  "/etc/nats/route-tls/{{ .Values.tls.routeKey }}"
+        ca_file:   "/etc/nats/route-tls/{{ .Values.tls.routeCa }}"
+        verify: true
+        timeout: 5
+      }
+      {{- end }}
+
+      {{- if .Values.nats.cluster.routes }}
+      routes: [
+        {{- range .Values.nats.cluster.routes }}
+        {{ include "nats.routeProtocol" $ }}://{{ . }}:{{ $.Values.nats.ports.cluster }},
+        {{- end }}
+      ]
+      {{- end }}
+
+      connect_retries: 120
+    }
+    {{- end }}
+
+    jetstream {
+      store_dir: "/data/jetstream"
+      max_memory_store: {{ .Values.nats.jetstream.maxMemoryStore | replace "Gi" "G" | replace "Mi" "M" }}
+      max_file_store:   {{ .Values.nats.jetstream.maxFileStore | replace "Gi" "G" | replace "Mi" "M" }}
+      domain: {{ .Values.nats.jetstream.domain | quote }}
+    }
+
+    accounts {
+      $SYS {
+        users = [
+          { user: {{ .Values.nats.accounts.system.user | quote }}, password: {{ .Values.nats.accounts.system.password | quote }} }
+        ]
+      }
+      APP {
+        jetstream: enabled
+        users = [
+          { user: {{ .Values.nats.accounts.app.user | quote }}, password: {{ .Values.nats.accounts.app.password | quote }} }
+        ]
+      }
+    }
+
+    system_account: "$SYS"
+    no_auth_user: {{ .Values.nats.accounts.app.user | quote }}
+
+    logtime: {{ .Values.nats.logging.logtime }}
+
+    debug: {{ .Values.nats.logging.debug }}
+    trace: {{ .Values.nats.logging.trace }}
+
+    max_connections:  {{ .Values.nats.limits.maxConnections }}
+    max_control_line: {{ .Values.nats.limits.maxControlLine }}
+    max_payload:      {{ .Values.nats.limits.maxPayload | int }}
+    max_pending:      {{ .Values.nats.limits.maxPending | int }}
+    write_deadline:   {{ .Values.nats.limits.writeDeadline | quote }}

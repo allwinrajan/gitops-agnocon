@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "freeswitch-dialplan.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "freeswitch-dialplan.labels" . | nindent 4 }}
+data:
+  # startup.sh — rendered from configs/startup.sh at helm package time.
+  # It fetches the full config blob from Consul KV, writes /app/.env,
+  # then exec's node /app/server.js.
+  # No placeholder env vars here — everything comes from Consul at runtime.
+  startup.sh: |
+{{ .Files.Get "configs/startup.sh" | indent 4 }}

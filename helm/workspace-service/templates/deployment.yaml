@@ -1,0 +1,324 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "workspace-service.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "workspace-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "workspace-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "workspace-service.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+
+        {{- if .Values.multus.enabled }}
+        k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition }}
+        {{- end }}
+
+        {{- if .Values.consul.enabled }}
+        consul.hashicorp.com/connect-inject:         "true"
+        consul.hashicorp.com/transparent-proxy:      "false"
+        consul.hashicorp.com/connect-service:        {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        consul.hashicorp.com/service-meta-multus_ip:   "pending"
+        consul.hashicorp.com/service-meta-multus_name: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        consul.hashicorp.com/service-meta-zone:        {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:        "workspace-ui"
+        {{- end }}
+
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+
+    spec:
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+
+      dnsPolicy: {{ .Values.dnsPolicy }}
+      terminationGracePeriodSeconds: 15
+
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      initContainers:
+        - name: fix-routing
+          image: {{ .Values.initContainers.fixRouting.image }}
+          imagePullPolicy: {{ .Values.initContainers.fixRouting.imagePullPolicy }}
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[fix-routing] Waiting for net1..."
+              for i in $(seq 1 30); do
+                ip link show net1 >/dev/null 2>&1 && echo "[fix-routing] net1 ready (${i})" && break
+                echo "[fix-routing] ${i}/30 waiting..."; sleep 2
+              done
+
+              ETH0_IP=$(ip -4 addr show eth0 | awk '/inet /{print $2}' | cut -d/ -f1)
+              echo "[fix-routing] eth0 IP: ${ETH0_IP}"
+
+              if ip neigh show dev eth0 2>/dev/null | grep -q "169.254.1.1"; then
+                ETH0_GW="169.254.1.1"
+              else
+                ETH0_GW=$(ip route show dev eth0 | awk '/^default/{print $3; exit}')
+              fi
+              echo "[fix-routing] eth0 gateway: ${ETH0_GW:-NONE}"
+
+              NET1_GW=$(ip route show dev net1 | awk '/^default/{print $3; exit}')
+              echo "[fix-routing] net1 gateway: ${NET1_GW:-none}"
+
+              echo "[fix-routing] === BEFORE ===" && ip route show
+
+              if [ -n "${NET1_GW}" ]; then
+                ip route del default via "${NET1_GW}" dev net1 2>/dev/null \
+                  && echo "[fix-routing] ✓ Deleted net1 default" || echo "[fix-routing] net1 default gone"
+              fi
+
+              if ! ip route show dev eth0 | grep -q "^default"; then
+                [ -n "${ETH0_GW}" ] && ip route add default via "${ETH0_GW}" dev eth0 2>/dev/null \
+                  && echo "[fix-routing] ✓ Restored eth0 default"
+              else
+                echo "[fix-routing] ✓ eth0 default present"
+              fi
+
+              if [ -n "${ETH0_GW}" ]; then
+                ip route replace 10.96.0.0/12  via "${ETH0_GW}" dev eth0 2>/dev/null \
+                  && echo "[fix-routing] ✓ 10.96.0.0/12 → eth0" || echo "[fix-routing] ✗ FAILED 10.96.0.0/12"
+                ip route replace 10.244.0.0/16 via "${ETH0_GW}" dev eth0 2>/dev/null \
+                  && echo "[fix-routing] ✓ 10.244.0.0/16 → eth0" || echo "[fix-routing] ✗ FAILED 10.244.0.0/16"
+              fi
+
+              if [ -n "${ETH0_GW}" ] && [ -n "${ETH0_IP}" ]; then
+                ip route flush table 100 2>/dev/null || true
+                ip route add default via "${ETH0_GW}" dev eth0 table 100 2>/dev/null || true
+                ip rule del from "${ETH0_IP}" table 100 priority 100 2>/dev/null || true
+                ip rule add from "${ETH0_IP}" table 100 priority 100 2>/dev/null \
+                  && echo "[fix-routing] ✓ Table 100: from ${ETH0_IP} → eth0 (Envoy :20000 fix)"
+              fi
+
+              if [ -n "${NET1_GW}" ]; then
+                ip route flush table 200 2>/dev/null || true
+                ip route add default             via "${NET1_GW}" dev net1 table 200 2>/dev/null || true
+                ip route add 192.168.9.0/24 dev net1 scope link           table 200 2>/dev/null || true
+                ip rule del from 192.168.9.0/24 table 200 priority 200 2>/dev/null || true
+                ip rule del to   192.168.9.0/24 table 200 priority 201 2>/dev/null || true
+                ip rule add from 192.168.9.0/24 lookup 200 priority 200 2>/dev/null || true
+                ip rule add to   192.168.9.0/24 lookup 200 priority 201 2>/dev/null || true
+                echo "[fix-routing] ✓ Table 200: LAN 192.168.9.0/24 ↔ net1"
+              fi
+
+              echo "[fix-routing] === AFTER ===" && ip route show
+              COREDNS_DEV=$(ip route get 10.96.0.10 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
+              [ "${COREDNS_DEV}" = "net1" ] && { echo "[fix-routing] ✗ FATAL: CoreDNS still via net1" >&2; exit 1; }
+              echo "[fix-routing] ✓ CoreDNS via ${COREDNS_DEV} — OK"
+              echo "[fix-routing] ✓ Done"
+
+        {{- if .Values.consul.enabled }}
+        - name: consul-tag-patcher
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MULTUS_NETWORK_NAME
+              value: {{ .Values.multus.networkAttachmentDefinition | quote }}
+            - name: CONSUL_SERVICE_NAME
+              value: {{ .Values.consul.serviceName | quote }}
+            - name: POD_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: ZONE
+              value: {{ .Values.consul.zone | quote }}
+          command:
+            - python3
+            - -u
+            - -c
+            - |
+              import fcntl, json, os, socket, ssl, struct, sys, time, urllib.request, urllib.error
+
+              def log(msg): print(f"[consul-tag-patcher] {msg}", flush=True)
+
+              def iface_ip(iface):
+                  try:
+                      s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                      packed = struct.pack("256s", iface[:15].encode())
+                      info = fcntl.ioctl(s.fileno(), 0x8915, packed)
+                      s.close()
+                      return socket.inet_ntoa(info[20:24])
+                  except Exception as e:
+                      log(f"ioctl failed for {iface}: {e}"); return None
+
+              K8S_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "")
+              K8S_PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+              K8S_URL  = f"https://{K8S_HOST}:{K8S_PORT}"
+              TOKEN    = open("/var/run/secrets/kubernetes.io/serviceaccount/token").read().strip()
+              CTX      = ssl.create_default_context(cafile="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+
+              def k8s_patch(path, body):
+                  req = urllib.request.Request(f"{K8S_URL}{path}", data=body, method="PATCH",
+                      headers={"Authorization": f"Bearer {TOKEN}",
+                               "Content-Type": "application/strategic-merge-patch+json"})
+                  try:
+                      with urllib.request.urlopen(req, context=CTX, timeout=10) as r:
+                          r.read(); return True
+                  except urllib.error.HTTPError as e:
+                      log(f"PATCH HTTP {e.code}: {e.read().decode()[:400]}")
+                  except Exception as e:
+                      log(f"PATCH error: {e}")
+                  return False
+
+              svc_name    = os.environ["CONSUL_SERVICE_NAME"]
+              pod_ip      = os.environ.get("POD_IP", "")
+              pod_port    = os.environ.get("POD_PORT", "5000")
+              zone        = os.environ.get("ZONE", "ZONE-1")
+              pod_name    = os.environ["POD_NAME"]
+              ns          = os.environ["POD_NAMESPACE"]
+              multus_name = os.environ["MULTUS_NETWORK_NAME"]
+              log(f"pod={pod_name} ns={ns} service={svc_name} POD_IP={pod_ip}")
+
+              multus_ip = None
+              for attempt in range(1, 31):
+                  for iface in ["net1", "eth1", "net0"]:
+                      multus_ip = iface_ip(iface)
+                      if multus_ip:
+                          log(f"MULTUS_IP={multus_ip} on {iface} (attempt {attempt})"); break
+                  if multus_ip: break
+                  log(f"Attempt {attempt}/30 — Multus NIC not ready, retrying in 2s..."); time.sleep(2)
+
+              if not multus_ip:
+                  log("ERROR: no Multus IP found after 30 attempts — exiting 0"); sys.exit(0)
+
+              tags_str = json.dumps({
+                  "service":     svc_name,
+                  "POD_IP":      pod_ip,
+                  "POD_PORT":    pod_port,
+                  "MULTUS_IP":   multus_ip,
+                  "MULTUS_NAME": multus_name,
+                  "ZONE":        zone,
+                  "role":        "workspace-ui",
+              }, separators=(",", ":")).replace(",", "\\,")
+
+              patch = json.dumps({"metadata": {"annotations": {
+                  "consul.hashicorp.com/service-tags":             tags_str,
+                  "consul.hashicorp.com/service-meta-pod_ip":      pod_ip,
+                  "consul.hashicorp.com/service-meta-pod_port":    pod_port,
+                  "consul.hashicorp.com/service-meta-multus_ip":   multus_ip,
+                  "consul.hashicorp.com/service-meta-multus_name": multus_name,
+                  "consul.hashicorp.com/service-meta-zone":        zone,
+                  "consul.hashicorp.com/service-meta-role":        "workspace-ui",
+              }}}).encode()
+
+              if k8s_patch(f"/api/v1/namespaces/{ns}/pods/{pod_name}", patch):
+                  log(f"PATCH OK — tags={tags_str}")
+              else:
+                  log("PATCH failed — static annotations used as fallback")
+              sys.exit(0)
+        {{- end }}
+
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "/app/startup.sh"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONSUL_URL
+              value: {{ .Values.consul.url | quote }}
+            - name: CONSUL_TOKEN
+              value: {{ .Values.consul.token | quote }}
+            - name: CONSUL_ZONE
+              value: {{ .Values.consul.zone | quote }}
+            - name: MULTUS_NAD
+              value: {{ .Values.multus.networkAttachmentDefinition | quote }}
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.enabled }}
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/startup.sh
+              subPath: startup.sh
+            # ── TLS certificate for nginx SSL ──────────────────────────────
+            {{- if .Values.tls.enabled }}
+            - name: tls-certs
+              mountPath: /etc/nginx/ssl
+              readOnly: true
+            {{- end }}
+
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "workspace-service.fullname" . }}-config
+            defaultMode: 0755
+        # ── TLS secret volume ─────────────────────────────────────────────
+        {{- if .Values.tls.enabled }}
+        - name: tls-certs
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

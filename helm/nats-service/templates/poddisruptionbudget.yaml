@@ -1,0 +1,19 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nats
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/component: nats
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: nats
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: nats
+{{- end }}

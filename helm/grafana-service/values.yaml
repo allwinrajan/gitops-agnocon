@@ -1,0 +1,72 @@
+# Realtime Grafana — values-staging.yaml
+
+namespace: observability
+
+replicaCount: 1
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: realtime-grafana-staging-v1.0.0
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: regcred
+
+nameOverride: ""
+fullnameOverride: "grafana-service"
+
+service:
+  type: ClusterIP
+  port: 3000
+
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+
+  connectInject: true
+
+  serviceName: "grafana-service"
+  serviceAccountName: "grafana-service"
+  zone: "ZONE-1"
+
+  excludeInboundPorts:  "3000"
+  excludeOutboundPorts: "3000"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-grafana-service
+dnsPolicy: ClusterFirst
+
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+probes:
+  enabled: false
+  liveness:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  readiness:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 15
+    periodSeconds: 5
+
+resources:
+  requests:
+    cpu: "300m"
+    memory: "512Mi"
+  limits:
+    cpu: "800m"
+    memory: "1Gi"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

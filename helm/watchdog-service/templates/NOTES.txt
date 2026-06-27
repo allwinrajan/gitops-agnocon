@@ -1,0 +1,31 @@
+watchdog deployed successfully 🎉
+
+Pod       : watchdog-<hash>
+Namespace : {{ .Values.namespace }}
+
+── Consul KV ─────────────────────────────────────────────────────────────────
+  Runtime config is fetched at startup from:
+    {{ .Values.consul.url }}/v1/kv/consul-monitor-service/config?raw
+
+  If the Consul KV key is missing, the pod will refuse to start (fail-fast).
+
+{{- if .Values.consul.connectInject }}
+── Consul Connect (service mesh) ─────────────────────────────────────────────
+  Service name : {{ .Values.consul.serviceName }}
+  Transparent proxy : disabled (Multus traffic bypasses Envoy)
+  Inbound ports excluded  : {{ .Values.consul.excludeInboundPorts }}
+  Outbound ports excluded : {{ .Values.consul.excludeOutboundPorts }}
+
+  The consul-tag-patcher init container patches the pod annotations at startup
+  with the real Multus secondary IP so Consul registers the correct address.
+{{- end }}
+
+{{- if .Values.multus.enabled }}
+── Multus ─────────────────────────────────────────────────────────────────────
+  Network attachment : {{ .Values.multus.networkAttachmentDefinition }}
+{{- end }}
+
+── Init container order ───────────────────────────────────────────────────────
+  1. fix-routing        — removes stray default routes from Multus CNI
+  2. consul-tag-patcher — discovers Multus IP and patches pod annotations
+  3. wait-for-network   — waits for net1/eth1 before main container starts

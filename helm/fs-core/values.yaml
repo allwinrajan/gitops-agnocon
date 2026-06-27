@@ -1,0 +1,139 @@
+# =============================================================================
+# fs-core Helm values — INFRASTRUCTURE ONLY
+# =============================================================================
+# ALL runtime config (URLs, IPs, certs, ACL rules) lives in Consul KV:
+#   fs-core-v1/zone-1/config
+#
+# Required keys in that blob:
+#   ROUTING_SERVICE_URL=http://<ip>:<port>/dialplan
+#   DIRECTORY_SERVICE_URL=http://<ip>:<port>/directory
+#   HTTP_CACHE_SSL_CERT=/path/to/cert.crt
+#   ACL_LOOPBACK_AUTO=allow:127.0.0.1/32,allow:x.x.x.x/32,...
+#   ACL_LAN=deny:x.x.x.x/24,allow:x.x.x.x/32,...
+#   ACL_TRUSTED=allow:x.x.x.x/32,allow:x.x.x.x/24,...
+# =============================================================================
+
+name: fs-core
+namespace: freeswitch
+
+replicaCount: 2
+
+image:
+  repository: agnocon/agnoshinimages
+  tag: fs-core-staging-http-cache-v1.1.0
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: regcred
+
+# Consul — connection only; no KV values here
+consul:
+  enabled: true
+  url:                "https://consul-server.consul.svc.cluster.local:8501"
+  token:              "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  kvKey:              "fs-core-v1/zone-1/config"
+  serviceName:        "fs-core"
+  serviceAccountName: "fs-core"
+  zone:               "ZONE-1"
+  excludeInboundPorts:  "5060,5080,8021,7443,8085"
+  excludeOutboundPorts: "5060,5080,8021,7443,8085"
+
+# Multus / MacVLAN
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-fs-core
+
+# Init containers
+initContainers:
+  fixRouting:
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+  waitForNetwork:
+    image: busybox:1.35
+    imagePullPolicy: IfNotPresent
+    waitTimeout: 30
+    checkInterval: 2
+
+# DNS
+dnsPolicy: None
+dnsConfig:
+  nameservers:
+    - 10.96.0.10
+  searches:
+    - freeswitch.svc.cluster.local
+    - svc.cluster.local
+    - cluster.local
+  options:
+    - name: ndots
+      value: "5"
+    - name: use-vc
+
+# FreeSWITCH ports
+freeswitch:
+  ports:
+    sip:    { port: 5060, protocol: UDP }
+    sipAlt: { port: 5080, protocol: UDP }
+    esl:    { port: 8021, protocol: TCP }
+    wss:    { port: 7443, protocol: TCP }
+
+# Kubernetes Service
+service:
+  name: fs-core
+  enabled: true
+  type: ClusterIP
+  ports:
+    sip:    { port: 5060, protocol: UDP }
+    sipAlt: { port: 5080, protocol: UDP }
+    esl:    { port: 8021, protocol: TCP }
+    wss:    { port: 7443, protocol: TCP }
+
+# StatefulSet behaviour
+statefulset:
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  terminationGracePeriodSeconds: 15
+
+# Security context
+securityContext:
+  privileged: true
+  capabilities:
+    add: [NET_ADMIN, NET_RAW]
+  runAsUser: 0
+  runAsGroup: 0
+  allowPrivilegeEscalation: true
+
+# Persistence
+persistence:
+  enabled: false
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /usr/local/freeswitch
+
+# ConfigMap
+configMap:
+  name: fs-core-startup
+  mountPath: /configs
+
+# Admin backend TLS cert (Kubernetes Secret — not runtime config)
+adminBackend:
+  tlsSecretName:    admin-backend-service-tls-2
+  tlsCertMountPath: /etc/truststore/certs/admin-backend-service.crt
+  tlsCertSubPath:   admin-backend-service.crt
+
+# Resources
+resources:
+  requests:
+    cpu: "5"
+    memory: "3584Mi"
+  limits:
+    cpu: "7.5"
+    memory: "3828Mi"
+
+labels: {}
+annotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: []
+env: []

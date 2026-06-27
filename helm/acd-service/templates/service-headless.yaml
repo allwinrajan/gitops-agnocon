@@ -1,0 +1,22 @@
+# Headless service — required by StatefulSet for stable pod DNS.
+# Pods: acd-service-0.acd-service.freeswitch.svc.cluster.local
+# ACD Engine is a NATS consumer — no inbound ports needed,
+# but StatefulSet requires a serviceName to exist.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "acd-service.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "acd-service.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "acd-service.selectorLabels" . | nindent 4 }}
+  ports:
+    # Placeholder port — ACD Engine has no inbound traffic.
+    # Required because a headless service must declare at least one port.
+    - name: placeholder
+      port: 3000
+      targetPort: 3000
+      protocol: TCP

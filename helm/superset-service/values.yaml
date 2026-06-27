@@ -1,0 +1,114 @@
+# Apache Superset — values.yaml
+# Image: apache/superset:6.0.0 (official)
+#
+# superset-init container automates what was previously run manually:
+#   1. pip-installs mysql-connector-python so MySQL appears in the UI
+#   2. Runs superset db upgrade
+#   3. Runs superset fab create-admin (idempotent)
+#   4. Runs superset init
+# No MySQL pod is deployed — MySQL just becomes an available driver
+# that users can connect to from Settings -> Database Connections.
+
+namespace: observability
+
+replicaCount: 1
+
+image:
+  repository: apache/superset
+  tag: "6.0.0"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: "superset-service"
+
+service:
+  type: ClusterIP
+  port: 8088
+
+# Consul Connect
+consul:
+  enabled: true
+  url:   "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  connectInject: true
+  serviceName: "superset-service"
+  serviceAccountName: "superset-service"
+  zone: "ZONE-1"
+  excludeInboundPorts:  "8088"
+  excludeOutboundPorts: "8088"
+
+# Multus / MacVLAN
+multus:
+  enabled: true
+  networkAttachmentDefinition: "macvlan-superset-179"
+
+dnsPolicy: ClusterFirst
+
+initContainers:
+  fixRouting:
+    image: alpine:3.19
+    imagePullPolicy: IfNotPresent
+
+# Superset runtime configuration
+superset:
+  secretKey: "QWWDeJK0oDCuf/cNBCsilLMZ5mx2nqfw6KzSeCY6yQb3FC4CdpQCucYn"
+
+  adminUser:
+    username: admin
+    password: "admin"
+    firstName: Admin
+    lastName: User
+    email: admin@superset.local
+
+  # SQLite metadata DB for staging/single-node — use postgresql+psycopg2://... in production
+  sqlalchemyDatabaseUri: "sqlite:////var/lib/superset/superset.db"
+
+  # Installs mysql-connector-python (client driver only) so MySQL appears under Settings -> Database Connections; no MySQL server is deployed
+  installMysqlDriver: true
+
+  redisUrl: ""
+
+  featureFlags:
+    ENABLE_TEMPLATE_PROCESSING: "true"
+    DASHBOARD_NATIVE_FILTERS: "true"
+    DASHBOARD_CROSS_FILTERS: "true"
+    ENABLE_JAVASCRIPT_CONTROLS: "false"
+    ALERT_REPORTS: "false"
+    EMBEDDED_SUPERSET: "true"
+
+  extraEnv: {}
+
+probes:
+  enabled: true
+  liveness:
+    httpGet:
+      path: /health
+      port: 8088
+    initialDelaySeconds: 90
+    periodSeconds: 20
+    failureThreshold: 5
+  readiness:
+    httpGet:
+      path: /health
+      port: 8088
+    initialDelaySeconds: 60
+    periodSeconds: 10
+    failureThreshold: 5
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "1Gi"
+  limits:
+    cpu: "1500m"
+    memory: "2Gi"
+
+persistence:
+  enabled: true
+  storageClass: "local-path"
+  accessMode: ReadWriteOnce
+  size: 10Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
