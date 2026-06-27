@@ -1,8 +1,127 @@
-# postgres-service — production overlay
-# Merged on top of values.yaml:  helm -f values.yaml -f values-production.yaml
+# PostgreSQL HA — values.yaml
 
 image:
-  tag: "2.17.0-pg17"
+  repository: timescale/timescaledb
+  tag: "latest-pg17"
+  pullPolicy: IfNotPresent
 
+# TimescaleDB
+timescaledb:
+  enabled: true
+
+namespace: "postgres-cluster"
+
+# PostgreSQL superuser password
+postgresPassword: "postgres"
+
+# Application users created on startup
+users:
+  - name: "admin"
+    password: "Admin@123"
+  - name: "dbadmin"
+    password: "Dba@5678"
+
+# Default database created on startup
+defaultDatabase: "postgres"
+
+# High Availability
+ha:
+  enabled: false
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: false
+  networkAttachmentDefinition: macvlan-postgres-179
+
+# Storage — local-path 10Gi ReadWriteOnce
+# storage:
+#   size: "10Gi"
+#   storageClass: "local-path"
+#   accessMode: "ReadWriteOnce"
+
+storage:
+  size: "2Gi"
+  storageClass: "local-path"
+  accessMode: "ReadWriteOnce"
+
+# Resources — Guaranteed QoS (request = limit)
+# resources:
+#   primary:
+#     requests:
+#       cpu: "200m"
+#       memory: "500Mi"
+#     limits:
+#       cpu: "200m"
+#       memory: "500Gi"
+#   standby:
+#     requests:
+#       cpu: "200m"
+#       memory: "500Mi"
+#     limits:
+#       cpu: "200m"
+#       memory: "500Mi"
+
+resources:
+  primary:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
+
+  standby:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
+
+postgresPort: 5432
+
+# postgresConfig:
+#   maxConnections: 200
+#   sharedBuffers: "256MB"
+#   effectiveCacheSize: "512MB"
+#   walLevel: "replica"          # must be "replica" or "logical" for streaming replication
+#   maxWalSenders: 10
+#   maxReplicationSlots: 10
+#   hotStandby: "on"
+#   walKeepSize: "128MB"
+
+postgresConfig:
+  maxConnections: 50
+  sharedBuffers: "128MB"
+  effectiveCacheSize: "256MB"
+  walLevel: "replica"
+  maxWalSenders: 3
+  maxReplicationSlots: 3
+  hotStandby: "on"
+  walKeepSize: "64MB"
+
+# Consul — connect-inject Envoy sidecar
 consul:
-  token: "PROD-CONSUL-TOKEN-REPLACE-ME"
+  enabled: false
+  url: "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  serviceName: "postgres-service"
+  serviceAccountName: "postgres-service"
+  zone: "ZONE-1"
+  excludeInboundPorts: "5432"
+  excludeOutboundPorts: "5432"
+
+# Probes — disabled by default, enable after deployment validation
+probes:
+  liveness:
+    enabled: false
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readiness:
+    enabled: false
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3

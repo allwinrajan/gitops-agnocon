@@ -15,12 +15,12 @@ spec:
         # - service: multus-nad
         #   namespace: multus-nad
         #   wave: "0"
-        - service: mysql-service
-          namespace: mysql-cluster
-          wave: "1"
-        # - service: postgres-service
-        #   namespace: postgres-cluster
+        # - service: mysql-service
+        #   namespace: mysql-cluster
         #   wave: "1"
+        - service: postgres-service
+          namespace: postgres-cluster
+          wave: "1"
         # - service: redis-service
         #   namespace: redis
         #   wave: "1"
