@@ -18,12 +18,12 @@ spec:
         # - service: mysql-service
         #   namespace: mysql-cluster
         #   wave: "1"
-        - service: postgres-service
-          namespace: postgres-cluster
-          wave: "1"
-        # - service: redis-service
-        #   namespace: redis
+        # - service: postgres-service
+        #   namespace: postgres-cluster
         #   wave: "1"
+        - service: redis-service
+          namespace: redis
+          wave: "1"
         # - service: influxdb-service
         #   namespace: influxdb
         #   wave: "1"
