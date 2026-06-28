@@ -15,9 +15,9 @@ spec:
         # - service: multus-nad
         #   namespace: multus-nad
         #   wave: "0"
-        - service: mysql-service
-          namespace: mysql-cluster
-          wave: "1"
+        # - service: mysql-service
+        #   namespace: mysql-cluster
+        #   wave: "1"
         # - service: postgres-service
         #   namespace: postgres-cluster
         #   wave: "1"
