@@ -1,0 +1,18 @@
+# ==============================================================================
+# PodDisruptionBudget
+#
+# ha.enabled: false → minAvailable=1 (only primary, protect it from drain)
+# ha.enabled: true  → minAvailable=2 (primary + at least 1 standby always up)
+# ==============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "postgres.name" . }}-pdb
+  namespace: {{ include "postgres.namespace" . }}
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ if .Values.ha.enabled }}2{{ else }}1{{ end }}
+  selector:
+    matchLabels:
+      app: postgres

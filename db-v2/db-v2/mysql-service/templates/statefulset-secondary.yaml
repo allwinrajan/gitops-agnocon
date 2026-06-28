@@ -1,0 +1,272 @@
+---
+# ==============================================================================
+# StatefulSet: mysql-cluster-secondary-0  (pod: mysql-cluster-secondary-0-0)
+#
+# Role: MySQL Group Replication secondary (read replica, failover candidate).
+# Replication: GR synchronous replication from primary. GR auto-elects a new
+#   primary when the primary pod disappears (majority 2-of-3 members vote).
+# Multus: NONE — secondaries use eth0 only for replication + reads.
+# Consul: connect-inject Envoy sidecar. NO consul-tag-patcher (no MacVLAN IP).
+# Failover: ~10-15s: group_replication_member_expel_timeout(5s) + election(5s).
+#   bootstrap.sh detects the existing group on pod restart and JOINs rather
+#   than re-bootstrapping — prevents split-brain after failover.
+# ==============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "mysql.name" . }}-secondary-0
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: secondary
+spec:
+  serviceName: {{ include "mysql.headlessSvc" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+      role: secondary
+      mysql/pod: secondary-0
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: mysql
+        role: secondary
+        mysql/pod: secondary-0
+      annotations:
+        # NO Multus annotation — secondaries have no MacVLAN NIC
+        {{- if .Values.consul.enabled }}
+        consul.hashicorp.com/connect-inject:                           "true"
+        consul.hashicorp.com/connect-service:                          {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy:                        "false"
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        consul.hashicorp.com/service-meta-zone:   {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:   "secondary"
+        mysql.agnoshin.io/role:                   "secondary"
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+
+      initContainers:
+        # fix-routing: runs on all pods. On secondaries net1 is absent —
+        # the init container waits 30s then proceeds without error.
+        # Still applies eth0 cluster CIDR routes and table 100 (Envoy probe fix).
+        {{- include "mysql.fixRouting" . | nindent 8 }}
+        # NO consul-tag-patcher — secondaries have no MacVLAN IP to register.
+
+      containers:
+        - name: mysql
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["bash", "/scripts/entrypoint.sh"]
+          env:
+            - name: SERVER_ID
+              value: "10"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.name" . }}-secret
+                  key: root-password
+            - name: MYSQL_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.name" . }}-secret
+                  key: replication-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+            - name: gr-xcom
+              containerPort: {{ .Values.groupReplication.groupPort }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            exec:
+              command: ["bash", "/scripts/liveness.sh"]
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold:    {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            exec:
+              command: ["bash", "/scripts/readiness.sh"]
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold:    {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources.secondary | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: config-rw
+              mountPath: /etc/mysql/conf.d
+            - name: config-ro
+              mountPath: /mnt/mysql-config
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+
+      volumes:
+        - name: config-rw
+          emptyDir: {}
+        - name: config-ro
+          configMap:
+            name: {{ include "mysql.name" . }}-config
+            defaultMode: 0444
+        - name: scripts
+          configMap:
+            name: {{ include "mysql.name" . }}-scripts
+            defaultMode: 0755
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storage.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}
+
+---
+# ==============================================================================
+# StatefulSet: mysql-cluster-secondary-1  (pod: mysql-cluster-secondary-1-0)
+# Same as secondary-0. SERVER_ID=11 (must be unique within the GR group).
+# Unique label mysql/pod: secondary-1 prevents K8s selector collision with
+# secondary-0 (both have role=secondary, so a disambiguating label is required).
+# ==============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "mysql.name" . }}-secondary-1
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: secondary
+spec:
+  serviceName: {{ include "mysql.headlessSvc" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+      role: secondary
+      mysql/pod: secondary-1
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: mysql
+        role: secondary
+        mysql/pod: secondary-1
+      annotations:
+        {{- if .Values.consul.enabled }}
+        consul.hashicorp.com/connect-inject:                           "true"
+        consul.hashicorp.com/connect-service:                          {{ .Values.consul.serviceName | quote }}
+        consul.hashicorp.com/transparent-proxy:                        "false"
+        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports:  {{ .Values.consul.excludeInboundPorts | quote }}
+        consul.hashicorp.com/transparent-proxy-exclude-outbound-ports: {{ .Values.consul.excludeOutboundPorts | quote }}
+        consul.hashicorp.com/service-meta-zone:   {{ .Values.consul.zone | quote }}
+        consul.hashicorp.com/service-meta-role:   "secondary"
+        mysql.agnoshin.io/role:                   "secondary"
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      {{- if .Values.consul.enabled }}
+      serviceAccountName: {{ .Values.consul.serviceAccountName }}
+      {{- end }}
+
+      initContainers:
+        {{- include "mysql.fixRouting" . | nindent 8 }}
+
+      containers:
+        - name: mysql
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["bash", "/scripts/entrypoint.sh"]
+          env:
+            - name: SERVER_ID
+              value: "11"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.name" . }}-secret
+                  key: root-password
+            - name: MYSQL_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mysql.name" . }}-secret
+                  key: replication-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+            - name: gr-xcom
+              containerPort: {{ .Values.groupReplication.groupPort }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            exec:
+              command: ["bash", "/scripts/liveness.sh"]
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold:    {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            exec:
+              command: ["bash", "/scripts/readiness.sh"]
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds:      {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold:    {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources.secondary | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: config-rw
+              mountPath: /etc/mysql/conf.d
+            - name: config-ro
+              mountPath: /mnt/mysql-config
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+
+      volumes:
+        - name: config-rw
+          emptyDir: {}
+        - name: config-ro
+          configMap:
+            name: {{ include "mysql.name" . }}-config
+            defaultMode: 0444
+        - name: scripts
+          configMap:
+            name: {{ include "mysql.name" . }}-scripts
+            defaultMode: 0755
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storage.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

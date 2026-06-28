@@ -1,0 +1,20 @@
+apiVersion: v2
+name: mysql-service
+description: >
+  MySQL 8 Group Replication HA — telecom K8s.
+  1 Primary + 2 Secondary. Single-primary mode with automatic failover.
+  Only Primary gets Multus MacVLAN net1 (LAN IP). Secondaries use eth0 only.
+  Consul Connect-inject (Envoy sidecar) — identical pattern to Redis/Kamailio.
+  consul-tag-patcher writes MacVLAN IP into service-meta for routing engine.
+  Guaranteed QoS: request=limit on all pods. Reuses existing PVCs and NADs.
+type: application
+version: 1.0.0
+appVersion: "8.0.36"
+keywords:
+  - mysql
+  - group-replication
+  - ha
+  - failover
+  - multus
+  - consul
+  - telecom

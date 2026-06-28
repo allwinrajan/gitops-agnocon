@@ -1,0 +1,17 @@
+apiVersion: v2
+name: redis-service
+description: >
+  Redis HA Sentinel — telecom K8s. 1 Primary + 2 Replicas + 3 Sentinels.
+  Reuses existing PVCs and NADs. ACL auth. Consul Connect-inject (Envoy sidecar).
+  Multus MacVLAN per pod. CONFIG SET notify-keyspace-events at runtime.
+  Pub/Sub keepalive. Clean Sentinel failover with announce-hostnames.
+type: application
+version: 1.0.0
+appVersion: "7.2"
+keywords:
+  - redis
+  - sentinel
+  - ha
+  - multus
+  - consul
+  - telecom

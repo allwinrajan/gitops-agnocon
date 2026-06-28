@@ -1,0 +1,112 @@
+---
+# ==============================================================================
+# Headless Service — shared by all StatefulSets (primary, replica, sentinel)
+#
+# Pod FQDN examples:
+#   redis-primary-0.redis-headless.<ns>.svc.cluster.local:6379
+#   redis-replica-1-0.redis-headless.<ns>.svc.cluster.local:6379
+#   redis-replica-2-0.redis-headless.<ns>.svc.cluster.local:6379
+#   redis-sentinel-0.redis-headless.<ns>.svc.cluster.local:26379
+#   redis-sentinel-1.redis-headless.<ns>.svc.cluster.local:26379
+#   redis-sentinel-2.redis-headless.<ns>.svc.cluster.local:26379
+#
+# publishNotReadyAddresses: true — pods register in DNS during init so Sentinel
+# can resolve them even before readiness probes pass.
+#
+# FIX: selector includes BOTH app=redis AND app=redis-sentinel so all pods
+# (primary, replicas, sentinels) get headless DNS entries. Two ports exposed:
+# 6379 (Redis data) and 26379 (Sentinel). The port that doesn't apply to a pod
+# is simply unreachable on that pod — this is harmless and standard practice.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "redis.headlessSvc" . }}
+  namespace: {{ include "redis.namespace" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: redis-sentinel
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
+
+---
+# ==============================================================================
+# Primary ClusterIP Service
+# Points at the pod with role=primary label.
+# NOTE: After Sentinel failover, pod labels do NOT change automatically.
+# Use Sentinel discovery for authoritative master lookup:
+#   redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+# This service is useful for initial writes and monitoring convenience.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-primary
+  namespace: {{ include "redis.namespace" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    role: primary
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+
+---
+# ==============================================================================
+# Replica ClusterIP Service
+# Load-balanced across both replicas for read-only traffic.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-replica
+  namespace: {{ include "redis.namespace" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: replica
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    role: replica
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+
+---
+# ==============================================================================
+# Sentinel ClusterIP Service
+# Stable VIP for Sentinel discovery inside the cluster.
+# Clients use: SENTINEL get-master-addr-by-name mymaster → current master IP:port
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: {{ include "redis.namespace" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sentinel
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: 26379

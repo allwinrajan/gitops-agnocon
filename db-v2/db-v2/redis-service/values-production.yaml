@@ -1,0 +1,124 @@
+# redis-service — values-production.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# TARGET CLUSTER: 2 nodes × 1 CPU × 2.4 GB RAM each
+#
+# MEMORY BUDGET — Redis Sentinel HA (6 pods: 1 primary + 2 replicas + 3 sentinels):
+#   redis-stack-server base RSS (ReJSON + RediSearch modules loaded): ~100–120 MB
+#   maxmemory=48mb (data):                                             ~48 MB
+#   Total per primary/replica:                                         ~170 MB → 256 Mi limit
+#   Sentinel (lightweight, no data):                                   ~30 MB  → 64 Mi limit
+#   6 pods total: 3×256Mi + 3×64Mi = 960 Mi — fits across 2 nodes
+#
+# Replication: async master→replica PSYNC2 streaming.
+# Failover: Sentinel quorum=2, downAfterMs=5000 → new master elected in ~5-15s.
+#   Replicas reconnect by FQDN (announce-hostnames=yes in sentinel.conf).
+#   Original primary restarts and Sentinel demotes it to replica automatically.
+#
+# NOTE: redis-stack-server loads ReJSON + RediSearch at startup even with maxmemory=48mb.
+#   Module memory is separate from maxmemory budget. Total RSS will be ~150-200MB.
+#   If you don't need ReJSON/RediSearch, switch image to redis:7.2-alpine (much lighter).
+#
+# Deploy:
+#   kubectl create ns redis
+#   helm upgrade --install redis-service . -n redis -f values-production.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+namespace: redis
+
+image:
+  redis: "redis/redis-stack-server:7.2.0-v10"
+  pullPolicy: IfNotPresent
+
+auth:
+  enabled: true
+  username: "admin"
+  password: "Admin@123"
+
+redis:
+  notifyKeyspaceEvents: "ExgKlt"
+  appendonly: "yes"
+  appendfsync: "everysec"
+  maxmemory: "48mb"             # data budget; module RSS is additional
+  maxmemoryPolicy: "allkeys-lru"
+  tcpKeepalive: 30
+  hz: 10
+  pubsubClientOutputBufferLimit: "pubsub 8388608 4194304 60"
+  extraConfig: ""
+
+sentinel:
+  replicas: 3
+  port: 26379
+  masterName: "mymaster"
+  quorum: 2                     # 2-of-3 sentinels must agree for failover
+  downAfterMs: 5000             # 5s — standard; safe on this cluster
+  failoverTimeout: 30000        # 30s failover timeout (generous for slow nodes)
+  parallelSyncs: 1              # sync 1 replica at a time after failover
+
+multus:
+  primary:
+    enabled: false
+    nadName: "macvlan-redis-primary"
+  replica1:
+    enabled: false
+    nadName: "macvlan-redis-replica1"
+  replica2:
+    enabled: false
+    nadName: "macvlan-redis-replica2"
+  sentinel:
+    enabled: false
+    nadName: ""
+
+consul:
+  enabled: false
+  url: "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  serviceName: "redis-service"
+  serviceAccountName: "redis-service"
+  zone: "ZONE-1"
+  excludeInboundPorts:  "6379,26379"
+  excludeOutboundPorts: "6379,26379"
+
+storage:
+  storageClass: "local-path"
+  primary:
+    size: "1Gi"
+  replica:
+    size: "1Gi"
+
+resources:
+  primary:
+    requests:
+      cpu: "50m"
+      memory: "150Mi"
+    limits:
+      cpu: "400m"
+      memory: "256Mi"   # 120MB RSS + 48MB data + headroom
+  replica:
+    requests:
+      cpu: "50m"
+      memory: "150Mi"
+    limits:
+      cpu: "300m"
+      memory: "256Mi"   # same as primary — replica loads same modules
+  sentinel:
+    requests:
+      cpu: "10m"
+      memory: "24Mi"
+    limits:
+      cpu: "100m"
+      memory: "64Mi"    # sentinel is very lightweight
+
+# Probes: enabled — Redis starts fast (<5s), safe to enable immediately.
+# Readiness checks role:master on primary (role:slave on replicas).
+probes:
+  enabled: true
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
