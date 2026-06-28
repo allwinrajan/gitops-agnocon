@@ -23,17 +23,18 @@ Headless service name
 Primary pod FQDN — used by secondaries for GR join and replication
 */}}
 {{- define "mysql.primaryFQDN" -}}
-{{- printf "mysql-cluster-primary-0.%s.%s.svc.cluster.local" (include "mysql.headlessSvc" .) (include "mysql.namespace" .) }}
+{{- printf "%s-primary-0.%s.%s.svc.cluster.local" (include "mysql.name" .) (include "mysql.headlessSvc" .) (include "mysql.namespace" .) }}
 {{- end }}
 
 {{/*
 Group Replication seeds — all three pods via headless DNS
 */}}
 {{- define "mysql.grSeeds" -}}
+{{- $name := include "mysql.name" . -}}
 {{- $svc := include "mysql.headlessSvc" . -}}
 {{- $ns  := include "mysql.namespace" . -}}
 {{- $p   := .Values.groupReplication.groupPort | toString -}}
-{{- printf "mysql-cluster-primary-0.%s.%s.svc.cluster.local:%s,mysql-cluster-secondary-0-0.%s.%s.svc.cluster.local:%s,mysql-cluster-secondary-1-0.%s.%s.svc.cluster.local:%s" $svc $ns $p $svc $ns $p $svc $ns $p }}
+{{- printf "%s-primary-0.%s.%s.svc.cluster.local:%s,%s-secondary-0-0.%s.%s.svc.cluster.local:%s,%s-secondary-1-0.%s.%s.svc.cluster.local:%s" $name $svc $ns $p $name $svc $ns $p $name $svc $ns $p }}
 {{- end }}
 
 {{/*

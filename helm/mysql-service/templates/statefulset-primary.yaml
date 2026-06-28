@@ -39,7 +39,9 @@ spec:
         role: primary
       annotations:
         # ── Multus MacVLAN — PRIMARY ONLY ────────────────────────────────────
+        {{- if .Values.multus.enabled }}
         k8s.v1.cni.cncf.io/networks: {{ .Values.multus.networkAttachmentDefinition | quote }}
+        {{- end }}
         # ── Consul Connect ───────────────────────────────────────────────────
         {{- if .Values.consul.enabled }}
         consul.hashicorp.com/connect-inject:                           "true"
