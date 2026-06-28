@@ -58,24 +58,24 @@ resources:
   primary:
     requests:
       cpu: "100m"
-      memory: "640Mi"
+      memory: "256Mi"
     limits:
       cpu: "500m"
-      memory: "896Mi"
+      memory: "512Mi"
 
   secondary:
     requests:
       cpu: "100m"
-      memory: "640Mi"
+      memory: "256Mi"
     limits:
       cpu: "500m"
-      memory: "896Mi"
+      memory: "512Mi"
 
 mysqlPort: 3306
 
 mysqlConfig:
   maxConnections: 50
-  innodbBufferPoolSize: "192M"
+  innodbBufferPoolSize: "128M"
 
 # Consul — connect-inject Envoy sidecar
 consul:
