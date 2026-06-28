@@ -57,25 +57,25 @@ storage:
 resources:
   primary:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "150m"
+      memory: "640Mi"
     limits:
       cpu: "500m"
-      memory: "512Mi"
+      memory: "896Mi"
 
   secondary:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "150m"
+      memory: "640Mi"
     limits:
       cpu: "500m"
-      memory: "512Mi"
+      memory: "896Mi"
 
 mysqlPort: 3306
 
 mysqlConfig:
   maxConnections: 50
-  innodbBufferPoolSize: "128M"
+  innodbBufferPoolSize: "192M"
 
 # Consul — connect-inject Envoy sidecar
 consul:
@@ -92,13 +92,13 @@ consul:
 probes:
   liveness:
     enabled: true
-    initialDelaySeconds: 180   # 3 min — GR init + join takes time on constrained nodes
+    initialDelaySeconds: 240  # extra slack for single-vCPU node contention
     periodSeconds: 15
-    timeoutSeconds: 5
-    failureThreshold: 5        # 75s grace after liveness starts before forced restart
+    timeoutSeconds: 8
+    failureThreshold: 8       # 120s grace after liveness starts before forced restart
   readiness:
     enabled: true
-    initialDelaySeconds: 60
+    initialDelaySeconds: 90
     periodSeconds: 10
-    timeoutSeconds: 5
-    failureThreshold: 3
+    timeoutSeconds: 8
+    failureThreshold: 5

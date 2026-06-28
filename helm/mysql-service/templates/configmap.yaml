@@ -298,7 +298,7 @@ data:
     # During this window, only verify mysqld is accepting connections.
     # This prevents premature pod kill/restart while GR is still joining the group.
     UPTIME=$(cat /proc/uptime | awk '{print int($1)}')
-    if [ "${UPTIME}" -lt 300 ]; then
+    if [ "${UPTIME}" -lt 360 ]; then
       mysqladmin ping -uroot -p"${MYSQL_ROOT_PASSWORD}" \
         --socket=/var/run/mysqld/mysqld.sock --silent 2>/dev/null
       exit $?
