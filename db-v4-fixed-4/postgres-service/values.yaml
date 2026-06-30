@@ -1,60 +1,68 @@
-# PostgreSQL HA — values.yaml
+# PostgreSQL HA — values.yaml (base defaults)
+# Deploy: helm upgrade --install postgres-service . -f values.yaml -f values-production.yaml
+#         helm upgrade --install postgres-service . -f values.yaml -f values-staging.yaml
 
 image:
   repository: timescale/timescaledb
   tag: "latest-pg17"
   pullPolicy: IfNotPresent
 
-# TimescaleDB
+# TimescaleDB extension — loaded via shared_preload_libraries
 timescaledb:
   enabled: true
 
 namespace: "postgres-cluster"
 
-# PostgreSQL superuser password
 postgresPassword: "postgres"
 
-# Application users created on startup
 users:
   - name: "admin"
     password: "Admin@123"
   - name: "dbadmin"
     password: "Dba@5678"
 
-# Default database created on startup
 defaultDatabase: "postgres"
 
-# High Availability
+# High Availability — set ha.enabled=true to deploy standby pods
 ha:
   enabled: false
+  replicas: 2
 
-# Multus / MacVLAN (feature flag)
+# Multus / MacVLAN — PRIMARY ONLY gets a MacVLAN IP for external routing
 multus:
   enabled: true
   networkAttachmentDefinition: macvlan-postgres-179
 
-# Storage — local-path 10Gi ReadWriteOnce
+# Network / pg_hba.conf
+network:
+  authMethod: "md5"          # md5 | scram-sha-256 | trust
+  allowedCIDRs:
+    - cidr: "0.0.0.0/0"
+      databases: ["all"]
+      replication: true
+
+# Storage
 storage:
   size: "10Gi"
   storageClass: "local-path"
   accessMode: "ReadWriteOnce"
 
-# Resources — Guaranteed QoS (request = limit)
+# Resources — Guaranteed QoS (request = limit) for production
 resources:
   primary:
     requests:
-      cpu: "200m"
-      memory: "500Mi"
+      cpu: "500m"
+      memory: "1Gi"
     limits:
-      cpu: "200m"
-      memory: "500Gi"
+      cpu: "500m"
+      memory: "1Gi"
   standby:
     requests:
-      cpu: "200m"
-      memory: "500Mi"
+      cpu: "300m"
+      memory: "512Mi"
     limits:
-      cpu: "200m"
-      memory: "500Mi"
+      cpu: "300m"
+      memory: "512Mi"
 
 postgresPort: 5432
 
@@ -79,7 +87,7 @@ consul:
   excludeInboundPorts: "5432"
   excludeOutboundPorts: "5432"
 
-# Probes — disabled by default, enable after deployment validation
+# Probes — disabled by default; enable in environment overlays after validation
 probes:
   liveness:
     enabled: false

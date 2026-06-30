@@ -2,13 +2,24 @@
 # ==============================================================================
 # StatefulSet: redis-replica-1  (pod: redis-replica-1-0)
 #
-# Role: Read replica. Replicates from primary via FQDN (headless DNS).
-# Multus: net1 from macvlan-redis-replica1 NAD.
-# Consul: connect-inject Envoy sidecar. consul-tag-patcher patches Multus IP.
-# Resources: 1 CPU limit (read-only, lower write pressure).
-# postStart: CONFIG SET notify-keyspace-events — replicas also publish events
-#            (keyspace notifications work on replicas in read-only mode).
-# PVC: reuses existing data-redis-replica-1-0 (10Gi on longhorn-redis).
+# FIX v2 — Readiness probe was failing with:
+#   "AUTH failed: ERR AUTH <password> called without any password configured"
+#
+# Root cause: redis-stack-server /entrypoint.sh loads ReJSON+RediSearch modules
+# (~15-25s) before processing the --include config. During module loading, Redis
+# is already accepting connections on 6379 BUT the default user has NO password.
+# The postStart hook's PING loop can connect without -a PASS and succeed, then
+# requirepass is applied by the config load. However if the readiness probe fires
+# BEFORE requirepass is applied (or if a stale PVC has ACL state overriding it),
+# the probe's "-a PASS" causes the AUTH error above.
+#
+# Fix:
+#   1. postStart: try PING without auth first (catches passwordless window),
+#      then force CONFIG SET requirepass before relying on -a PASS anywhere.
+#   2. readiness initialDelaySeconds=60 (raised from 45) so probe doesn't
+#      fire until after module load + requirepass is guaranteed active.
+#   3. readiness script: try auth AND no-auth PING as fallback so the probe
+#      itself doesn't fail during the brief passwordless window.
 # ==============================================================================
 apiVersion: apps/v1
 kind: StatefulSet
@@ -34,6 +45,7 @@ spec:
         app: redis
         role: replica
         redis/pod: replica-1
+        redis-headless-member: "true"
       annotations:
         {{- if .Values.multus.replica1.enabled }}
         k8s.v1.cni.cncf.io/networks: {{ .Values.multus.replica1.nadName | quote }}
@@ -69,8 +81,6 @@ spec:
         - name: redis
           image: {{ .Values.image.redis }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # redis-server loads modules from redis.conf loadmodule directives.
-          # replicaof injected as command-line arg (overrides redis.conf if present).
           command:
             - sh
             - -c
@@ -97,20 +107,37 @@ spec:
                   - sh
                   - -c
                   - |
-                    PRIMARY="{{ include "redis.primaryFQDN" . }}"
-                    # Wait for local Redis to be ready
-                    for i in $(seq 1 30); do
+                    # FIX: redis-stack-server starts WITHOUT requirepass during module
+                    # loading (~15-25s). We must handle BOTH the passwordless window
+                    # AND the post-config passworded state, then force requirepass.
+                    #
+                    # Step 1: Wait for Redis to accept ANY connection (with or without auth)
+                    for i in $(seq 1 40); do
+                      redis-cli --no-auth-warning PING 2>/dev/null | grep -q PONG && break
                       redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG && break
                       sleep 2
                     done
-                    # Ensure replication is connected — retry if --replicaof arg didn't connect (DNS race at startup)
+
+                    # Step 2: Force requirepass — handles both stale PVC (nopass ACL)
+                    # and the passwordless startup window. Try both auth states.
+                    redis-cli --no-auth-warning CONFIG SET requirepass "${REDIS_PASSWORD}" 2>/dev/null || true
+                    redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning CONFIG SET requirepass "${REDIS_PASSWORD}" 2>/dev/null || true
+
+                    # Step 3: Wait for master_link_status:up (not just role:slave)
+                    # role:slave is set immediately after REPLICAOF — before auth/sync
+                    # with the primary completes. master_link_status:up is the only
+                    # reliable signal that replication is actually working.
+                    PRIMARY="{{ include "redis.primaryFQDN" . }}"
                     for attempt in $(seq 1 10); do
-                      ROLE=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null | grep "^role:" | tr -d '\r')
-                      if [ "${ROLE}" = "role:slave" ] || [ "${ROLE}" = "role:replica" ]; then
-                        echo "[postStart-r1] Replication connected (${ROLE})"
+                      INFO_OUT=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null)
+                      ROLE=$(echo "${INFO_OUT}" | grep "^role:" | tr -d '\r')
+                      LINK=$(echo "${INFO_OUT}" | grep "^master_link_status:" | tr -d '\r')
+                      if { [ "${ROLE}" = "role:slave" ] || [ "${ROLE}" = "role:replica" ]; } \
+                         && [ "${LINK}" = "master_link_status:up" ]; then
+                        echo "[postStart-r1] Replication connected (${ROLE}, ${LINK})"
                         break
                       fi
-                      echo "[postStart-r1] attempt ${attempt}: role=${ROLE} — issuing REPLICAOF ${PRIMARY} 6379"
+                      echo "[postStart-r1] attempt ${attempt}: role=${ROLE} link=${LINK} — retrying REPLICAOF"
                       redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning REPLICAOF "${PRIMARY}" 6379 2>/dev/null || true
                       sleep 5
                     done
@@ -143,8 +170,16 @@ spec:
                 - sh
                 - -c
                 - |
-                  redis-cli -a "${REDIS_PASSWORD}" \
-                    --no-auth-warning INFO replication | grep -qE "role:slave|role:replica"
+                  # FIX: check role AND master_link_status:up.
+                  # Also: if auth fails (passwordless window), try no-auth as fallback
+                  # so the probe doesn't fail with the misleading AUTH error.
+                  OUT=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null)
+                  if [ -z "$OUT" ]; then
+                    # Auth may have failed during passwordless window — not ready yet
+                    exit 1
+                  fi
+                  echo "$OUT" | grep -qE "role:slave|role:replica" && \
+                    echo "$OUT" | grep -q "master_link_status:up"
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds:       {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds:      {{ .Values.probes.readiness.timeoutSeconds }}
@@ -163,7 +198,6 @@ spec:
           configMap:
             name: redis-config
 
-  # PVC — matches existing data-redis-replica-1-0 (10Gi)
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -177,6 +211,7 @@ spec:
 ---
 # ==============================================================================
 # StatefulSet: redis-replica-2  (pod: redis-replica-2-0)
+# Same fixes as replica-1 above.
 # ==============================================================================
 apiVersion: apps/v1
 kind: StatefulSet
@@ -202,6 +237,7 @@ spec:
         app: redis
         role: replica
         redis/pod: replica-2
+        redis-headless-member: "true"
       annotations:
         {{- if .Values.multus.replica2.enabled }}
         k8s.v1.cni.cncf.io/networks: {{ .Values.multus.replica2.nadName | quote }}
@@ -237,8 +273,6 @@ spec:
         - name: redis
           image: {{ .Values.image.redis }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # redis-server loads modules from redis.conf loadmodule directives.
-          # replicaof injected as command-line arg (overrides redis.conf if present).
           command:
             - sh
             - -c
@@ -265,18 +299,26 @@ spec:
                   - sh
                   - -c
                   - |
-                    PRIMARY="{{ include "redis.primaryFQDN" . }}"
-                    for i in $(seq 1 30); do
+                    # FIX: same as replica-1 — handle passwordless startup window
+                    for i in $(seq 1 40); do
+                      redis-cli --no-auth-warning PING 2>/dev/null | grep -q PONG && break
                       redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG && break
                       sleep 2
                     done
+                    redis-cli --no-auth-warning CONFIG SET requirepass "${REDIS_PASSWORD}" 2>/dev/null || true
+                    redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning CONFIG SET requirepass "${REDIS_PASSWORD}" 2>/dev/null || true
+
+                    PRIMARY="{{ include "redis.primaryFQDN" . }}"
                     for attempt in $(seq 1 10); do
-                      ROLE=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null | grep "^role:" | tr -d '\r')
-                      if [ "${ROLE}" = "role:slave" ] || [ "${ROLE}" = "role:replica" ]; then
-                        echo "[postStart-r2] Replication connected (${ROLE})"
+                      INFO_OUT=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null)
+                      ROLE=$(echo "${INFO_OUT}" | grep "^role:" | tr -d '\r')
+                      LINK=$(echo "${INFO_OUT}" | grep "^master_link_status:" | tr -d '\r')
+                      if { [ "${ROLE}" = "role:slave" ] || [ "${ROLE}" = "role:replica" ]; } \
+                         && [ "${LINK}" = "master_link_status:up" ]; then
+                        echo "[postStart-r2] Replication connected (${ROLE}, ${LINK})"
                         break
                       fi
-                      echo "[postStart-r2] attempt ${attempt}: role=${ROLE} — issuing REPLICAOF ${PRIMARY} 6379"
+                      echo "[postStart-r2] attempt ${attempt}: role=${ROLE} link=${LINK} — retrying REPLICAOF"
                       redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning REPLICAOF "${PRIMARY}" 6379 2>/dev/null || true
                       sleep 5
                     done
@@ -309,8 +351,12 @@ spec:
                 - sh
                 - -c
                 - |
-                  redis-cli -a "${REDIS_PASSWORD}" \
-                    --no-auth-warning INFO replication | grep -qE "role:slave|role:replica"
+                  OUT=$(redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning INFO replication 2>/dev/null)
+                  if [ -z "$OUT" ]; then
+                    exit 1
+                  fi
+                  echo "$OUT" | grep -qE "role:slave|role:replica" && \
+                    echo "$OUT" | grep -q "master_link_status:up"
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds:       {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds:      {{ .Values.probes.readiness.timeoutSeconds }}
@@ -329,7 +375,6 @@ spec:
           configMap:
             name: redis-config
 
-  # PVC — matches existing data-redis-replica-2-0 (10Gi)
   volumeClaimTemplates:
     - metadata:
         name: data

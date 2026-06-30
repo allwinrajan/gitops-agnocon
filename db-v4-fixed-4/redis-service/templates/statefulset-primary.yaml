@@ -35,6 +35,7 @@ spec:
       labels:
         app: redis
         role: primary
+        redis-headless-member: "true"
       annotations:
         # ── Multus ─────────────────────────────────────────────────────────────
         {{- if .Values.multus.primary.enabled }}

@@ -1,0 +1,34 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║      MySQL Group Replication HA — deployed successfully              ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Architecture
+  mysql-cluster-primary-0       → GR primary    ({{ .Values.resources.primary.limits.cpu }} CPU / {{ .Values.resources.primary.limits.memory }})  net1: macvlan-mysql-primary
+  mysql-cluster-secondary-0-0   → GR secondary  ({{ .Values.resources.secondary.limits.cpu }} CPU / {{ .Values.resources.secondary.limits.memory }})  eth0 only
+  mysql-cluster-secondary-1-0   → GR secondary  ({{ .Values.resources.secondary.limits.cpu }} CPU / {{ .Values.resources.secondary.limits.memory }})  eth0 only
+
+Verify pods
+  kubectl get pods -n {{ include "mysql.namespace" . }}
+
+Check GR membership (all 3 must be ONLINE)
+  kubectl exec -n {{ include "mysql.namespace" . }} mysql-cluster-primary-0 -- \
+    mysql -uroot -p{{ .Values.rootPassword }} \
+    -e "SELECT MEMBER_HOST,MEMBER_STATE,MEMBER_ROLE FROM performance_schema.replication_group_members;"
+
+Identify current GR primary
+  kubectl exec -n {{ include "mysql.namespace" . }} mysql-cluster-primary-0 -- \
+    mysql -uroot -p{{ .Values.rootPassword }} \
+    -e "SELECT MEMBER_HOST FROM performance_schema.replication_group_members WHERE MEMBER_ROLE='PRIMARY';"
+
+Consul registration check (MacVLAN IP must not be 'pending')
+  kubectl get pod mysql-cluster-primary-0 -n {{ include "mysql.namespace" . }} \
+    -o jsonpath='{.metadata.annotations.consul\.hashicorp\.com/service-meta-multus_ip}'
+
+Failover test (kill primary → GR elects secondary in ~10–15s)
+  kubectl delete pod mysql-cluster-primary-0 -n {{ include "mysql.namespace" . }}
+  # Wait ~15s, then check new primary:
+  kubectl exec -n {{ include "mysql.namespace" . }} mysql-cluster-secondary-0-0 -- \
+    mysql -uroot -p{{ .Values.rootPassword }} \
+    -e "SELECT MEMBER_HOST,MEMBER_ROLE FROM performance_schema.replication_group_members WHERE MEMBER_ROLE='PRIMARY';"
+
+See README.md for full failure test procedures.

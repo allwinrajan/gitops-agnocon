@@ -1,21 +1,25 @@
-# Redis HA Sentinel — values.yaml
+# redis-service — values-staging.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Production-grade spec — Guaranteed QoS, Multus MacVLAN, Consul Connect.
+# For large nodes: ≥4 CPU, ≥8 GB RAM per node.
+#
+# Deploy:
+#   helm upgrade --install redis-service . -n redis -f values-staging.yaml
+# ─────────────────────────────────────────────────────────────────────────────
 
 namespace: redis
 
-# Image
 image:
   redis: "redis/redis-stack-server:7.2.0-v10"
   pullPolicy: IfNotPresent
 
-# Auth — Redis 7.x ACL (username + password via aclfile)
 auth:
   enabled: true
   username: "admin"
   password: "Admin@123"
 
-# Redis runtime config
 redis:
-  notifyKeyspaceEvents: "ExgKlt"   # $ omitted — written directly in redis.conf and CONFIG SET
+  notifyKeyspaceEvents: "ExgKlt"
   appendonly: "yes"
   appendfsync: "everysec"
   maxmemory: "200mb"
@@ -25,7 +29,6 @@ redis:
   pubsubClientOutputBufferLimit: "pubsub 67108864 33554432 60"
   extraConfig: ""
 
-# Sentinel
 sentinel:
   replicas: 3
   port: 26379
@@ -35,9 +38,8 @@ sentinel:
   failoverTimeout: 10000
   parallelSyncs: 1
 
-# Multus / MacVLAN (feature flag) — PRIMARY ONLY gets a MacVLAN IP (emng).
+# Multus: enabled — primary gets MacVLAN LAN IP
 multus:
-  # PRIMARY ONLY gets a MacVLAN IP (emng). Replicas/Sentinels use eth0.
   primary:
     enabled: true
     nadName: "macvlan-redis-primary"
@@ -51,7 +53,7 @@ multus:
     enabled: false
     nadName: ""
 
-# Consul — connect-inject Envoy sidecar (same mechanism as MySQL)
+# Consul: enabled
 consul:
   enabled: true
   url: "https://consul-server.consul.svc.cluster.local:8501"
@@ -62,7 +64,6 @@ consul:
   excludeInboundPorts:  "6379,26379"
   excludeOutboundPorts: "6379,26379"
 
-# Storage — sizes match existing PVCs exactly so Kubernetes binds to them.
 storage:
   storageClass: "longhorn-redis"
   primary:
@@ -70,7 +71,7 @@ storage:
   replica:
     size: "10Gi"
 
-# Resources
+# Guaranteed QoS — request = limit
 resources:
   primary:
     requests:
@@ -89,14 +90,13 @@ resources:
   sentinel:
     requests:
       cpu: "100m"
-      memory: "500Mi"
+      memory: "128Mi"
     limits:
       cpu: "100m"
-      memory: "500Mi"
+      memory: "128Mi"
 
-# Probes
 probes:
-  enabled: false
+  enabled: true
   liveness:
     initialDelaySeconds: 30
     periodSeconds: 10

@@ -1,0 +1,83 @@
+# MySQL Group Replication HA — values.yaml (base defaults)
+# Deploy: helm upgrade --install mysql-service . -f values.yaml -f values-production.yaml
+#         helm upgrade --install mysql-service . -f values.yaml -f values-staging.yaml
+
+image:
+  repository: mysql
+  tag: "8.0.36"
+  pullPolicy: IfNotPresent
+
+namespace: "mysql-cluster"
+
+rootPassword: "root"
+
+users:
+  - name: "appuser"
+    password: "App@1234"
+  - name: "dbadmin"
+    password: "Dba@5678"
+
+# Multus / MacVLAN (feature flag)
+multus:
+  enabled: true
+  networkAttachmentDefinition: macvlan-mysql-primary
+
+groupReplication:
+  groupName: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  groupPort: 33061
+
+storage:
+  size: "15Gi"
+  storageClass: "longhorn-mysql"
+
+# Resources — Guaranteed QoS (request = limit)
+resources:
+  primary:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  secondary:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+
+mysqlPort: 3306
+
+mysqlConfig:
+  maxConnections: 500
+  innodbBufferPoolSize: "512M"
+  performanceSchemaConsumersOnlyGR: false   # full PS history/digests — plenty of RAM
+  tableOpenCache: 4000
+  threadCacheSize: 32
+
+# Consul — connect-inject Envoy sidecar
+consul:
+  enabled: true
+  url: "https://consul-server.consul.svc.cluster.local:8501"
+  token: "693c91b6-88d9-87b2-3331-e6025c8f2cb8"
+  serviceName: "mysql-service"
+  serviceAccountName: "mysql-service"
+  zone: "ZONE-1"
+  excludeInboundPorts:  "3306,33061"
+  excludeOutboundPorts: "3306,33061"
+
+# Probes — disabled by default; enable in environment overlays after validation
+probes:
+  liveness:
+    enabled: false
+    initialDelaySeconds: 120
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readiness:
+    enabled: false
+    initialDelaySeconds: 60
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3

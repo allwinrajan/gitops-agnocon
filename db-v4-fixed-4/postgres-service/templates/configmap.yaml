@@ -122,11 +122,19 @@ data:
     chown postgres:postgres "${PGDATA}/postgresql.conf" "${PGDATA}/pg_hba.conf"
 
     # Start postgres temporarily to create users/db
+    # FIX: -t 60 was too tight on this hardware. After an ungraceful pod kill
+    # (kubectl delete pod sends SIGTERM then SIGKILL, not a clean shutdown),
+    # restart triggers crash recovery / WAL replay, which on a 1-vCPU node
+    # can exceed 60s. pg_ctl exits non-zero if the timeout is hit even though
+    # the server may still be starting in the background — and because this
+    # script runs under `set -e`, that non-zero exit killed the whole
+    # container, which is exactly the "container not found" / stuck Init
+    # symptom seen after killing the primary pod. 180s gives real headroom.
     echo "[entrypoint] Starting PostgreSQL (temp) for user/db creation..."
     gosu postgres pg_ctl start \
       -D "$PGDATA" \
       -o "-p $PG_PORT -c listen_addresses=127.0.0.1" \
-      -w -t 60
+      -w -t 180
 
     # Set superuser password
     echo "[entrypoint] Setting postgres password..."
@@ -175,7 +183,7 @@ data:
 
     # Stop temp instance, restart for full network access
     echo "[entrypoint] Stopping temp instance..."
-    gosu postgres pg_ctl stop -D "$PGDATA" -m fast -w
+    gosu postgres pg_ctl stop -D "$PGDATA" -m fast -w -t 120
 
     echo "[entrypoint] Starting PostgreSQL (production)..."
     exec gosu postgres postgres -D "$PGDATA" -p "$PG_PORT"

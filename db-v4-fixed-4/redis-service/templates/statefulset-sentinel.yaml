@@ -40,6 +40,7 @@ spec:
     metadata:
       labels:
         app: redis-sentinel
+        redis-headless-member: "true"
       annotations:
         {{- if and .Values.multus.sentinel.enabled .Values.multus.sentinel.nadName }}
         k8s.v1.cni.cncf.io/networks: {{ .Values.multus.sentinel.nadName | quote }}

@@ -1,0 +1,87 @@
+---
+# ==============================================================================
+# Headless Service — stable per-pod DNS for GR replication and client discovery
+#
+# Pod FQDN examples (use these for direct connection / GR seeds):
+#   <release>-primary-0.mysql-headless.<ns>.svc.cluster.local:3306
+#   <release>-secondary-0-0.mysql-headless.<ns>.svc.cluster.local:3306
+#   <release>-secondary-1-0.mysql-headless.<ns>.svc.cluster.local:3306
+#
+# publishNotReadyAddresses: true — pods enter DNS during init so GR can resolve
+# peers before readiness probes pass (critical for group_replication_group_seeds).
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mysql.headlessSvc" . }}
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: mysql
+  ports:
+    - name: mysql
+      port: {{ .Values.mysqlPort }}
+      targetPort: mysql
+    - name: gr-xcom
+      port: {{ .Values.groupReplication.groupPort }}
+      targetPort: gr-xcom
+
+---
+# ==============================================================================
+# Primary ClusterIP — read/write endpoint
+#
+# Targets the pod with label role=primary. This label is static (set at pod
+# creation); after GR auto-failover the elected primary is a secondary pod that
+# does NOT have role=primary. For write-path resilience after failover, clients
+# should use GR metadata:
+#   SELECT MEMBER_HOST FROM performance_schema.replication_group_members
+#   WHERE MEMBER_ROLE='PRIMARY';
+# or use a ProxySQL / MySQL Router sidecar for transparent failover routing.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mysql.name" . }}-primary
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: primary
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+    role: primary
+  ports:
+    - name: mysql
+      port: {{ .Values.mysqlPort }}
+      targetPort: mysql
+
+---
+# ==============================================================================
+# Secondary ClusterIP — read-only load-balanced endpoint
+#
+# Targets all pods with role=secondary. Both secondary-0 and secondary-1 are
+# included (mysql/pod label is NOT in selector — intentional for LB).
+# Route read-only queries here to offload primary.
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mysql.name" . }}-secondary
+  namespace: {{ include "mysql.namespace" . }}
+  labels:
+    {{- include "mysql.labels" . | nindent 4 }}
+    app.kubernetes.io/component: secondary
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+    role: secondary
+  ports:
+    - name: mysql
+      port: {{ .Values.mysqlPort }}
+      targetPort: mysql

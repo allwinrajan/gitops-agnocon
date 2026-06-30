@@ -6,7 +6,7 @@ description: >
   Multus MacVLAN per pod. CONFIG SET notify-keyspace-events at runtime.
   Pub/Sub keepalive. Clean Sentinel failover with announce-hostnames.
 type: application
-version: 1.0.0
+version: 1.1.0
 appVersion: "7.2"
 keywords:
   - redis
