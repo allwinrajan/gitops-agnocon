@@ -1,1 +1,0 @@
-Redis HA Sentinel — deployed successfully 
